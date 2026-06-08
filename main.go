@@ -14,6 +14,7 @@ func main() {
 	fmt.Println("Démarage de GoRedis...")
 	// Init state et buffer
 	state := make(map[string]any)
+	main_buffer_file := "buffer_persistant_a.txt"
 	var buffer []string
 
 	fmt.Println("GoRedis démarré.")
@@ -28,7 +29,7 @@ func main() {
 		line = strings.TrimSpace(line)
 		parseCommand(state, line) // pas besoin de passer un pointer car go le fait deja en interne
 		buffer = append(buffer, line)
-		updateBuffer(&buffer)
+		updateBuffer(&buffer, main_buffer_file)
 		fmt.Println("state : ", state)
 		fmt.Println("buffer : ", buffer)
 	}
@@ -87,8 +88,8 @@ func runGetCommand(state map[string]any, args []string) {
 	}
 }
 
-func updateBuffer(buffer *[]string) {
-	os.WriteFile("buffer_persistant.txt", []byte(strings.Join(*buffer, "\n")), 0644)
+func updateBuffer(buffer *[]string, mainBufferFile string) {
+	os.WriteFile(mainBufferFile, []byte(strings.Join(*buffer, "\n")), 0644)
 }
 
 func testLoLib() {
@@ -100,4 +101,33 @@ func testLoLib() {
 	})
 
 	fmt.Println(upper)
+}
+
+func updatePersistenState(filePath string) {
+
+	// Ici on veut prendre le contenu du buffer peristent
+	// et reconstruire un state au format json
+}
+
+func fullySynchronizeStateWithBuffer(filepath string) {
+	// Utilse lors du redémarage pour restaurer le state
+	// on recupere le contenu json du state persistant json
+	// on l'enrichie du contenu du buffer persistant
+	// on restaure la map state à jour
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		fmt.Println("Erreur lors de la lecture du fichier : ", err)
+	}
+	for line := range strings.Split(string(content), "\n") {
+
+	}
+}
+
+func switchBufferFile(mainBufferFile string) {
+	if mainBufferFile == "buffer_persistant_a.txt" {
+		mainBufferFile = "buffer_persistant_b.txt"
+	} else {
+		mainBufferFile = "buffer_persistant_a.txt"
+	}
+
 }
