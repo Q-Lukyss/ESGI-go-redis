@@ -15,17 +15,11 @@ const BUFFER_FILE_A = "buffer_persistant_a.txt"
 const BUFFER_FILE_B = "buffer_persistant_b.txt"
 
 func main() {
-	current_buffer_file := BUFFER_FILE_A
-	backup_buffer_file := BUFFER_FILE_B
-	state_persistant_file := STATE_FILE
-
 	fmt.Println("Démarage de GoRedis...")
-	// Init state et buffer
-	state := make(map[string]any)
-	var buffer []string
+	goredis := NewGoRedis()
 
 	// ici on veut restaurer le state
-	fullySynchronizeStateWithBuffer(current_buffer_file)
+	goredis.fullySynchronizeStateWithBuffer()
 
 	// on prompt l'user pour lui dire que tout est ok
 	fmt.Println("GoRedis démarré.")
@@ -38,14 +32,14 @@ func main() {
 	for {
 		line, _ := input.ReadString('\n')
 		line = strings.TrimSpace(line)
-		parseCommand(state, line) // pas besoin de passer un pointer car go le fait deja en interne
-		buffer = append(buffer, line)
+		parseCommand(goredis.state, line) // pas besoin de passer un pointer car go le fait deja en interne
+		goredis.buffer = append(goredis.buffer, line)
 		// toute les secondes ensuite
-		updateBuffer(&buffer, current_buffer_file)
+		goredis.updateBuffer(&goredis.buffer)
 		// toutes les 2 minutes ensuite
-		updatePersistentState(current_buffer_file, state_persistant_file)
-		fmt.Println("state : ", state)
-		fmt.Println("buffer : ", buffer)
+		goredis.updatePersistentState()
+		fmt.Println("state : ", goredis.state)
+		fmt.Println("buffer : ", goredis.buffer)
 	}
 }
 
@@ -117,43 +111,53 @@ func testLoLib() {
 	fmt.Println(upper)
 }
 
-func updatePersistentState(currentBufferFilePath string, stateFilePath string) {
-	// Ici on veut prendre le contenu du buffer peristent
-	// et reconstruire un state au format json
-	return
-}
-
-func fullySynchronizeStateWithBuffer(currentBufferFile string) {
-	// Utilse lors du redémarage pour restaurer le state
-	// on recupere le contenu json du state persistant json
-	// on l'enrichie du contenu du buffer persistant
-	// on restaure la map state à jour
-	content, err := os.ReadFile(currentBufferFile)
-	if err != nil {
-		fmt.Println("Erreur lors de la lecture du fichier : ", err)
-	}
-	for line := range strings.Split(string(content), "\n") {
-
-	}
-}
-
-func switchBufferFile(mainBufferFile string) {
-	if mainBufferFile == "buffer_persistant_a.txt" {
-		mainBufferFile = "buffer_persistant_b.txt"
-	} else {
-		mainBufferFile = "buffer_persistant_a.txt"
-	}
-
-}
-
 type GoRedis struct {
-	state             map[string]string
+	state             map[string]any
 	buffer            []string
 	currentBufferFile string
 	backupBufferFile  string
 	stateFilePath     string
 }
 
+// Convention pour créer des structs en Go
+func NewGoRedis() *GoRedis {
+	return &GoRedis{
+		state:             make(map[string]any),
+		buffer:            []string{},
+		currentBufferFile: BUFFER_FILE_A,
+		backupBufferFile:  BUFFER_FILE_B,
+		stateFilePath:     STATE_FILE,
+	}
+}
+
+func (g *GoRedis) switchBufferFile() {
+	if g.currentBufferFile == "buffer_persistant_a.txt" {
+		g.currentBufferFile = "buffer_persistant_b.txt"
+	} else {
+		g.currentBufferFile = "buffer_persistant_a.txt"
+	}
+}
+
 func (g *GoRedis) updateBuffer(buffer *[]string) {
 	os.WriteFile(g.currentBufferFile, []byte(strings.Join(*buffer, "\n")), 0644)
+}
+
+func (g *GoRedis) updatePersistentState() {
+	// Ici on veut prendre le contenu du buffer peristent
+	// et reconstruire un state au format json
+	return
+}
+
+func (g *GoRedis) fullySynchronizeStateWithBuffer() {
+	// Utilse lors du redémarage pour restaurer le state
+	// on recupere le contenu json du state persistant json
+	// on l'enrichie du contenu du buffer persistant
+	// on restaure la map state à jour
+	content, err := os.ReadFile(g.currentBufferFile)
+	if err != nil {
+		fmt.Println("Erreur lors de la lecture du fichier : ", err)
+	}
+	for line := range strings.Split(string(content), "\n") {
+
+	}
 }
