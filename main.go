@@ -30,6 +30,7 @@ func main() {
 	// on prompt l'user pour lui dire que tout est ok
 	fmt.Println("GoRedis démarré.")
 	fmt.Println("[q] Pour quitter")
+	fmt.Println("[h] Pour afficher l'aide")
 	fmt.Println("En Attente de commandes : ")
 	input := bufio.NewReader(os.Stdin)
 
@@ -106,6 +107,13 @@ func parseCommand(state map[string]any, input string) {
 	case "q", "Q", "quit", "Quit":
 		fmt.Println("Arret du programme")
 		os.Exit(0)
+	case "h", "H", "help", "Help":
+		fmt.Println("Aide :")
+		fmt.Println("[SET] : définit une clé avec une valeur")
+		fmt.Println("[DELETE] : supprime une clé")
+		fmt.Println("[GET] : récupère la valeur d'une clé")
+		fmt.Println("[q] : quitte le programme")
+		fmt.Println("[h] : affiche l'aide")
 	default:
 		fmt.Println("Commande inconnue : " + args[0])
 	}
