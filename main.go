@@ -10,26 +10,40 @@ import (
 	"github.com/samber/lo"
 )
 
+const STATE_FILE = "state_persistant.json"
+const BUFFER_FILE_A = "buffer_persistant_a.txt"
+const BUFFER_FILE_B = "buffer_persistant_b.txt"
+
 func main() {
+	current_buffer_file := BUFFER_FILE_A
+	backup_buffer_file := BUFFER_FILE_B
+	state_persistant_file := STATE_FILE
+
 	fmt.Println("Démarage de GoRedis...")
 	// Init state et buffer
 	state := make(map[string]any)
-	main_buffer_file := "buffer_persistant_a.txt"
 	var buffer []string
 
+	// ici on veut restaurer le state
+	fullySynchronizeStateWithBuffer(current_buffer_file)
+
+	// on prompt l'user pour lui dire que tout est ok
 	fmt.Println("GoRedis démarré.")
 	fmt.Println("[q] Pour quitter")
 	fmt.Println("En Attente de commandes : ")
 	input := bufio.NewReader(os.Stdin)
+
 	// on veut une boucle infini qui run le tps du programme
 	// elle prend les instructions
-
 	for {
 		line, _ := input.ReadString('\n')
 		line = strings.TrimSpace(line)
 		parseCommand(state, line) // pas besoin de passer un pointer car go le fait deja en interne
 		buffer = append(buffer, line)
-		updateBuffer(&buffer, main_buffer_file)
+		// toute les secondes ensuite
+		updateBuffer(&buffer, current_buffer_file)
+		// toutes les 2 minutes ensuite
+		updatePersistentState(current_buffer_file, state_persistant_file)
 		fmt.Println("state : ", state)
 		fmt.Println("buffer : ", buffer)
 	}
@@ -103,18 +117,18 @@ func testLoLib() {
 	fmt.Println(upper)
 }
 
-func updatePersistenState(filePath string) {
-
+func updatePersistentState(currentBufferFilePath string, stateFilePath string) {
 	// Ici on veut prendre le contenu du buffer peristent
 	// et reconstruire un state au format json
+	return
 }
 
-func fullySynchronizeStateWithBuffer(filepath string) {
+func fullySynchronizeStateWithBuffer(currentBufferFile string) {
 	// Utilse lors du redémarage pour restaurer le state
 	// on recupere le contenu json du state persistant json
 	// on l'enrichie du contenu du buffer persistant
 	// on restaure la map state à jour
-	content, err := os.ReadFile(filepath)
+	content, err := os.ReadFile(currentBufferFile)
 	if err != nil {
 		fmt.Println("Erreur lors de la lecture du fichier : ", err)
 	}
