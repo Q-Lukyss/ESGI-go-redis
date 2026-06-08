@@ -158,6 +158,6 @@ func (g *GoRedis) fullySynchronizeStateWithBuffer() {
 		fmt.Println("Erreur lors de la lecture du fichier : ", err)
 	}
 	for line := range strings.Split(string(content), "\n") {
-
+		fmt.Println(line)
 	}
 }
