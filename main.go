@@ -4,19 +4,25 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/samber/lo"
 )
 
-const STATE_FILE = "state_persistant.json"
-const BUFFER_FILE_A = "buffer_persistant_a.txt"
-const BUFFER_FILE_B = "buffer_persistant_b.txt"
-
 func main() {
 	fmt.Println("Démarage de GoRedis...")
-	goredis := NewGoRedis()
+
+	// charger nos variables env
+	stateFile, bufferFileA, bufferFileB, writeInterval, updateInterval := loadEnv()
+	// pour eviter les erreurs
+	fmt.Println(writeInterval)
+	fmt.Println(updateInterval)
+
+	goredis := NewGoRedis(bufferFileA, bufferFileB, stateFile)
 
 	// ici on veut restaurer le state
 	goredis.fullySynchronizeStateWithBuffer()
@@ -32,15 +38,46 @@ func main() {
 	for {
 		line, _ := input.ReadString('\n')
 		line = strings.TrimSpace(line)
-		parseCommand(goredis.state, line) // pas besoin de passer un pointer car go le fait deja en interne
+		parseCommand(goredis.state, line)
 		goredis.buffer = append(goredis.buffer, line)
-		// toute les secondes ensuite
+		// toute les secondes
 		goredis.updateBuffer(&goredis.buffer)
-		// toutes les 2 minutes ensuite
+		// toutes les 2 minutes
 		goredis.updatePersistentState()
-		fmt.Println("state : ", goredis.state)
-		fmt.Println("buffer : ", goredis.buffer)
 	}
+}
+
+func loadEnv() (string, string, string, time.Duration, time.Duration) {
+	stateFile := "state_persistant.json"
+	bufferFileA := "buffer_persistant_a.txt"
+	bufferFileB := "buffer_persistant_b.txt"
+	writeInterval := 1 * time.Second
+	updateInterval := 2 * time.Minute
+	fmt.Println(writeInterval)
+	fmt.Println(updateInterval)
+
+	if err := godotenv.Load(); err == nil {
+		if v := os.Getenv("STATE_FILE"); v != "" {
+			stateFile = v
+		}
+		if v := os.Getenv("BUFFER_FILE_A"); v != "" {
+			bufferFileA = v
+		}
+		if v := os.Getenv("BUFFER_FILE_B"); v != "" {
+			bufferFileB = v
+		}
+		if v := os.Getenv("WRITE_TO_BUFFER_INTERVAL"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				writeInterval = time.Duration(n) * time.Second
+			}
+		}
+		if v := os.Getenv("UPDATE_STATE_FROM_BUFFER_INTERVAL"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				updateInterval = time.Duration(n) * time.Second
+			}
+		}
+	}
+	return stateFile, bufferFileA, bufferFileB, writeInterval, updateInterval
 }
 
 // | Commande | Forme | Effet |
@@ -119,14 +156,14 @@ type GoRedis struct {
 	stateFilePath     string
 }
 
-// Convention pour créer des structs en Go
-func NewGoRedis() *GoRedis {
+// Convention pour créer des structs en Go -> New + nom struct mdr
+func NewGoRedis(bufferFileA, bufferFileB, stateFile string) *GoRedis {
 	return &GoRedis{
 		state:             make(map[string]any),
 		buffer:            []string{},
-		currentBufferFile: BUFFER_FILE_A,
-		backupBufferFile:  BUFFER_FILE_B,
-		stateFilePath:     STATE_FILE,
+		currentBufferFile: bufferFileA,
+		backupBufferFile:  bufferFileB,
+		stateFilePath:     stateFile,
 	}
 }
 
