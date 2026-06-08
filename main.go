@@ -145,3 +145,15 @@ func switchBufferFile(mainBufferFile string) {
 	}
 
 }
+
+type GoRedis struct {
+	state             map[string]string
+	buffer            []string
+	currentBufferFile string
+	backupBufferFile  string
+	stateFilePath     string
+}
+
+func (g *GoRedis) updateBuffer(buffer *[]string) {
+	os.WriteFile(g.currentBufferFile, []byte(strings.Join(*buffer, "\n")), 0644)
+}
