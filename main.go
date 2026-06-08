@@ -13,22 +13,24 @@ import (
 func main() {
 	fmt.Println("Démarage de GoRedis...")
 	// Init state et buffer
-	var state map[string]any
+	state := make(map[string]any)
 	var buffer []string
 
 	fmt.Println("GoRedis démarré.")
 	fmt.Println("[q] Pour quitter")
 	fmt.Println("En Attente de commandes : ")
+	input := bufio.NewReader(os.Stdin)
 	// on veut une boucle infini qui run le tps du programme
 	// elle prend les instructions
 
 	for {
-		input := bufio.NewReader(os.Stdin)
 		line, _ := input.ReadString('\n')
 		line = strings.TrimSpace(line)
-		parseCommand(&state, line)
+		parseCommand(state, line) // pas besoin de passer un pointer car go le fait deja en interne
 		buffer = append(buffer, line)
 		updateBuffer(&buffer)
+		fmt.Println("state : ", state)
+		fmt.Println("buffer : ", buffer)
 	}
 }
 
@@ -40,7 +42,7 @@ func main() {
 // | `GET` filtré | `GET WHERE <champ> <op> <valeur>` | renvoie les entrées matchant le prédicat |
 
 // Opérateurs de filtre à supporter sur `GET` : **`equals`, `contains`, `>`, `>=`, `<`, `<=`**.
-func parseCommand(state *map[string]any, input string) {
+func parseCommand(state map[string]any, input string) {
 	args := strings.Fields(input)
 
 	if len(args) == 0 {
@@ -63,16 +65,26 @@ func parseCommand(state *map[string]any, input string) {
 	}
 }
 
-func runSetCommand(state *map[string]any, args []string) {
+func runSetCommand(state map[string]any, args []string) {
 	fmt.Printf("Commande SET bien reçue : key : %s, value : %s\n", args[0], args[1])
+	state[args[0]] = args[1]
 }
 
-func runDeleteCommand(state *map[string]any, args []string) {
+func runDeleteCommand(state map[string]any, args []string) {
 	fmt.Printf("Commande DELETE bien reçue : key : %s\n", args[0])
+	delete(state, args[0])
 }
 
-func runGetCommand(state *map[string]any, args []string) {
+func runGetCommand(state map[string]any, args []string) {
 	fmt.Printf("Commande GET bien reçue : key : %s\n", args[0])
+	// equivivalent de :
+	// value, ok := state[args[0]]
+	// if ok {
+	if value, ok := state[args[0]]; ok { // equivalent de
+		fmt.Println("value : pour ", args[0], " = ", value)
+	} else {
+		fmt.Println("Key non trouvée")
+	}
 }
 
 func updateBuffer(buffer *[]string) {
