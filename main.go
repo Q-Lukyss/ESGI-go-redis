@@ -212,7 +212,11 @@ func (g *GoRedis) save_persistent_state() {
 	defer ticker.Stop()
 	for range ticker.C {
 		g.mutex.Lock()
+		// faire persister le state en json
 		g.write_state_to_persistent_state(g.state)
+		// vider le buffer persistant sous Lock
+		// pour etre sur que on ecrit pas dedans
+		os.Truncate(g.bufferFile, 0)
 		g.mutex.Unlock()
 	}
 }
