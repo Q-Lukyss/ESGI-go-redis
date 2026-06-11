@@ -1,6 +1,5 @@
 STATE_FILE=state_persistant.json
-BUFFER_FILE_A=buffer_persistant_a.txt
-BUFFER_FILE_B=buffer_persistant_b.txt
+BUFFER_FILE=buffer_persistant.txt
 # valeure en seconde
 WRITE_TO_BUFFER_INTERVAL=1
 # valeure en minute

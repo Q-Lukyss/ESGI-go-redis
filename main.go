@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"strings"
@@ -17,15 +19,15 @@ func main() {
 	fmt.Println("Démarage de GoRedis...")
 
 	// charger nos variables env
-	stateFile, bufferFileA, bufferFileB, writeInterval, updateInterval := loadEnv()
+	stateFile, bufferFile, writeInterval, updateInterval := loadEnv()
 	// pour eviter les erreurs
 	fmt.Println(writeInterval)
 	fmt.Println(updateInterval)
 
-	goredis := NewGoRedis(bufferFileA, bufferFileB, stateFile)
+	goredis := NewGoRedis(bufferFile, stateFile, writeInterval, updateInterval)
 
 	// ici on veut restaurer le state
-	goredis.fullySynchronizeStateWithBuffer()
+	goredis.populate_state_on_startup()
 
 	// on prompt l'user pour lui dire que tout est ok
 	fmt.Println("GoRedis démarré.")
@@ -34,38 +36,35 @@ func main() {
 	fmt.Println("En Attente de commandes : ")
 	input := bufio.NewReader(os.Stdin)
 
+	// deux methodes pour mettre a jour le buffer et le state persistent
+	// selon le tick
+	go goredis.flush_memory_buffer()
+	go goredis.save_persistent_state()
+
 	// on veut une boucle infini qui run le tps du programme
 	// elle prend les instructions
 	for {
 		line, _ := input.ReadString('\n')
 		line = strings.TrimSpace(line)
 		parseCommand(goredis.state, line)
+		goredis.mutex.Lock()
 		goredis.buffer = append(goredis.buffer, line)
-		// toute les secondes
-		goredis.updateBuffer(&goredis.buffer)
-		// toutes les 2 minutes
-		goredis.updatePersistentState()
+		goredis.mutex.Unlock()
 	}
 }
 
-func loadEnv() (string, string, string, time.Duration, time.Duration) {
+func loadEnv() (string, string, time.Duration, time.Duration) {
 	stateFile := "state_persistant.json"
-	bufferFileA := "buffer_persistant_a.txt"
-	bufferFileB := "buffer_persistant_b.txt"
+	bufferFile := "buffer_persistant.txt"
 	writeInterval := 1 * time.Second
 	updateInterval := 2 * time.Minute
-	fmt.Println(writeInterval)
-	fmt.Println(updateInterval)
 
 	if err := godotenv.Load(); err == nil {
 		if v := os.Getenv("STATE_FILE"); v != "" {
 			stateFile = v
 		}
-		if v := os.Getenv("BUFFER_FILE_A"); v != "" {
-			bufferFileA = v
-		}
-		if v := os.Getenv("BUFFER_FILE_B"); v != "" {
-			bufferFileB = v
+		if v := os.Getenv("BUFFER_FILE"); v != "" {
+			bufferFile = v
 		}
 		if v := os.Getenv("WRITE_TO_BUFFER_INTERVAL"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
@@ -74,11 +73,11 @@ func loadEnv() (string, string, string, time.Duration, time.Duration) {
 		}
 		if v := os.Getenv("UPDATE_STATE_FROM_BUFFER_INTERVAL"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
-				updateInterval = time.Duration(n) * time.Second
+				updateInterval = time.Duration(n) * time.Minute
 			}
 		}
 	}
-	return stateFile, bufferFileA, bufferFileB, writeInterval, updateInterval
+	return stateFile, bufferFile, writeInterval, updateInterval
 }
 
 // | Commande | Forme | Effet |
@@ -141,10 +140,6 @@ func runGetCommand(state map[string]any, args []string) {
 	}
 }
 
-func updateBuffer(buffer *[]string, mainBufferFile string) {
-	os.WriteFile(mainBufferFile, []byte(strings.Join(*buffer, "\n")), 0644)
-}
-
 func testLoLib() {
 	names := []string{"alice", "bob", "charlie"}
 
@@ -157,52 +152,98 @@ func testLoLib() {
 }
 
 type GoRedis struct {
-	state             map[string]any
-	buffer            []string
-	currentBufferFile string
-	backupBufferFile  string
-	stateFilePath     string
+	state                       map[string]any
+	buffer                      []string
+	bufferFile                  string
+	stateFilePath               string
+	writeToBufferInterval       time.Duration
+	writePeristentStateInterval time.Duration
+	mutex                       sync.Mutex
 }
 
 // Convention pour créer des structs en Go -> New + nom struct mdr
-func NewGoRedis(bufferFileA, bufferFileB, stateFile string) *GoRedis {
+func NewGoRedis(bufferFile, stateFile string, writeInterval, updateInterval time.Duration) *GoRedis {
 	return &GoRedis{
-		state:             make(map[string]any),
-		buffer:            []string{},
-		currentBufferFile: bufferFileA,
-		backupBufferFile:  bufferFileB,
-		stateFilePath:     stateFile,
+		state:                       make(map[string]any),
+		buffer:                      []string{},
+		bufferFile:                  bufferFile,
+		stateFilePath:               stateFile,
+		writeToBufferInterval:       writeInterval,
+		writePeristentStateInterval: updateInterval,
+		mutex:                       sync.Mutex{},
 	}
 }
 
-func (g *GoRedis) switchBufferFile() {
-	if g.currentBufferFile == "buffer_persistant_a.txt" {
-		g.currentBufferFile = "buffer_persistant_b.txt"
-	} else {
-		g.currentBufferFile = "buffer_persistant_a.txt"
+func (g *GoRedis) flush_memory_buffer() {
+	ticker := time.NewTicker(g.writeToBufferInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		g.mutex.Lock()
+		buffer_data := g.buffer
+		g.buffer = nil
+		g.mutex.Unlock()
+		g.save_buffer_data_to_persistent_buffer(buffer_data)
 	}
 }
 
-func (g *GoRedis) updateBuffer(buffer *[]string) {
-	os.WriteFile(g.currentBufferFile, []byte(strings.Join(*buffer, "\n")), 0644)
+func (g *GoRedis) save_buffer_data_to_persistent_buffer(buffer_data []string) {
+	if len(buffer_data) == 0 {
+		return
+	}
+	file, err := os.OpenFile(g.bufferFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("Erreur lors de l'ouverture du fichier buffer persistent:", err)
+		return
+	}
+	defer file.Close()
+	_, err = file.Write([]byte(strings.Join(buffer_data, "\n") + "\n"))
 }
 
-func (g *GoRedis) updatePersistentState() {
-	// Ici on veut prendre le contenu du buffer peristent
-	// et reconstruire un state au format json
-	return
+func (g *GoRedis) save_persistent_state() {
+	// Ici on veut prendre le contenu du state
+	// et construire un state au format json en ecrasant l'ancien j'imagine
+	// La meilleure façon de faire c'est créer un fichier tmp
+	// on ecrit dans le fichier tmp et ensuite on rename ce fichier pour ecraser l'ancien
+	// ça evite la corruption des données car le rename est atomique
+	// on pas d'ancien a nouveau nom sans etat intermediaire
+	// Cependant mdr sur Windows evdemment
+	// contrairement à Linux, os.Rename n'est pas atomique
+	ticker := time.NewTicker(g.writePeristentStateInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		g.mutex.Lock()
+		g.write_state_to_persistent_state(g.state)
+		g.mutex.Unlock()
+	}
 }
 
-func (g *GoRedis) fullySynchronizeStateWithBuffer() {
+func (g *GoRedis) write_state_to_persistent_state(state_data map[string]any) {
+	state_json, err := json.Marshal(state_data)
+	if err != nil {
+		fmt.Println("Erreur lors de la conversion du state en json : ", err)
+		return
+	}
+	err = os.WriteFile("state.json.bak", state_json, 0644)
+	if err != nil {
+		fmt.Println("Erreur lors de l'écriture du fichier backup : ", err)
+	}
+	err = os.Rename("state.json.bak", "state.json")
+	if err != nil {
+		fmt.Println("Erreur lors du rename du fichier : ", err)
+	}
+}
+
+func (g *GoRedis) populate_state_on_startup() {
 	// Utilse lors du redémarage pour restaurer le state
 	// on recupere le contenu json du state persistant json
 	// on l'enrichie du contenu du buffer persistant
 	// on restaure la map state à jour
-	content, err := os.ReadFile(g.currentBufferFile)
-	if err != nil {
-		fmt.Println("Erreur lors de la lecture du fichier : ", err)
-	}
-	for line := range strings.Split(string(content), "\n") {
-		fmt.Println(line)
-	}
+	// content, err := os.ReadFile(g.bufferFile)
+	// if err != nil {
+	// 	fmt.Println("Erreur lors de la lecture du fichier : ", err)
+	// }
+	// for line := range strings.Split(string(content), "\n") {
+	// 	fmt.Println(line)
+	// }
+	fmt.Println("TODO")
 }
