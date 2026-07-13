@@ -20,7 +20,7 @@ type Match struct {
 // (4.4, structure finale) implémentent toutes les deux cette interface,
 // et partagent donc les mêmes tests.
 // Ces implémentations ne sont pas thread-safe par elles-mêmes : c'est
-// l'Engine qui garantit un accès sous verrou.
+// l'GoRedis qui garantit un accès sous verrou.
 type RangeIndex interface {
 	Insert(value, key string)
 	Delete(value, key string)
@@ -55,7 +55,7 @@ func matchesRange(itemSortKey string, op FilterOp, thresholdKey string) bool {
 
 // addToIndexesLocked maintient l'index inversé (equals) et l'index de range
 // à jour à chaque écriture. Appelée sous verrou par setLocked.
-func (e *Engine) addToIndexesLocked(key, value string) {
+func (e *GoRedis) addToIndexesLocked(key, value string) {
 	if e.equalsIndex[value] == nil {
 		e.equalsIndex[value] = make(map[string]struct{})
 	}
@@ -65,7 +65,7 @@ func (e *Engine) addToIndexesLocked(key, value string) {
 
 // removeFromIndexesLocked retire une clé des index. Appelée sous verrou par
 // deleteLocked (et par setLocked avant réécriture d'une clé existante).
-func (e *Engine) removeFromIndexesLocked(key, value string) {
+func (e *GoRedis) removeFromIndexesLocked(key, value string) {
 	if set, ok := e.equalsIndex[value]; ok {
 		delete(set, key)
 		if len(set) == 0 {
@@ -77,7 +77,7 @@ func (e *Engine) removeFromIndexesLocked(key, value string) {
 
 // GetWhere évalue un prédicat sur les valeurs du store et renvoie les
 // entrées qui matchent, triées par clé pour un résultat déterministe.
-func (e *Engine) GetWhere(op FilterOp, filterValue string) ([]Match, error) {
+func (e *GoRedis) GetWhere(op FilterOp, filterValue string) ([]Match, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -96,7 +96,7 @@ func (e *Engine) GetWhere(op FilterOp, filterValue string) ([]Match, error) {
 
 // scanContainsLocked parcourt tout le state (pas d'index dédié pour une
 // recherche de sous-chaîne) et filtre les valeurs contenant filterValue.
-func (e *Engine) scanContainsLocked(filterValue string) []Match {
+func (e *GoRedis) scanContainsLocked(filterValue string) []Match {
 	matches := lo.FilterMap(lo.Entries(e.state), func(entry lo.Entry[string, string], _ int) (Match, bool) {
 		return Match{Key: entry.Key, Value: entry.Value}, strings.Contains(entry.Value, filterValue)
 	})
@@ -104,11 +104,11 @@ func (e *Engine) scanContainsLocked(filterValue string) []Match {
 	return matches
 }
 
-func (e *Engine) matchesFromKeySetLocked(keys map[string]struct{}) []Match {
+func (e *GoRedis) matchesFromKeySetLocked(keys map[string]struct{}) []Match {
 	return e.matchesFromKeysLocked(lo.Keys(keys))
 }
 
-func (e *Engine) matchesFromKeysLocked(keys []string) []Match {
+func (e *GoRedis) matchesFromKeysLocked(keys []string) []Match {
 	matches := lo.Map(keys, func(key string, _ int) Match {
 		return Match{Key: key, Value: e.state[key]}
 	})

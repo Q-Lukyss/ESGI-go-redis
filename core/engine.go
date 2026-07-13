@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// Engine est le moteur : le state vivant en RAM, avec tout ce qu'il faut
-type Engine struct {
+// GoRedis est le moteur : le state vivant en RAM, avec tout ce qu'il faut
+type GoRedis struct {
 	mu sync.Mutex
 
 	state map[string]string
@@ -21,9 +21,9 @@ type Engine struct {
 	snapshotInterval time.Duration
 }
 
-// NewEngine construit un moteur prêt à l'emploi, avec un state vide.
-func NewEngine(storage Storage, flushInterval, snapshotInterval time.Duration) *Engine {
-	return &Engine{
+// NewGoRedis construit un moteur prêt à l'emploi, avec un state vide.
+func NewGoRedis(storage Storage, flushInterval, snapshotInterval time.Duration) *GoRedis {
+	return &GoRedis{
 		state:            make(map[string]string),
 		equalsIndex:      make(map[string]map[string]struct{}),
 		rangeIndex:       NewBTree(),
@@ -35,7 +35,7 @@ func NewEngine(storage Storage, flushInterval, snapshotInterval time.Duration) *
 }
 
 // Set pose une valeur pour une clé (écrase si déjà présente).
-func (e *Engine) Set(key, value string) {
+func (e *GoRedis) Set(key, value string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.setLocked(key, value)
@@ -43,7 +43,7 @@ func (e *Engine) Set(key, value string) {
 }
 
 // Get lit une valeur ; erreur si la clé est absente.
-func (e *Engine) Get(key string) (string, error) {
+func (e *GoRedis) Get(key string) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	value, ok := e.state[key]
@@ -54,7 +54,7 @@ func (e *Engine) Get(key string) (string, error) {
 }
 
 // Delete supprime une clé ; erreur si elle est absente.
-func (e *Engine) Delete(key string) error {
+func (e *GoRedis) Delete(key string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, ok := e.state[key]; !ok {
@@ -67,7 +67,7 @@ func (e *Engine) Delete(key string) error {
 
 // setLocked applique un SET au state + index, sans toucher au buffer ni au verrou.
 // Appelée aussi bien par Set() (nouvelle écriture) que par Restore() (rejeu).
-func (e *Engine) setLocked(key, value string) {
+func (e *GoRedis) setLocked(key, value string) {
 	if old, ok := e.state[key]; ok {
 		e.removeFromIndexesLocked(key, old)
 	}
@@ -76,14 +76,14 @@ func (e *Engine) setLocked(key, value string) {
 }
 
 // deleteLocked applique un DELETE au state + index, sans toucher au buffer ni au verrou.
-func (e *Engine) deleteLocked(key string) {
+func (e *GoRedis) deleteLocked(key string) {
 	old := e.state[key]
 	delete(e.state, key)
 	e.removeFromIndexesLocked(key, old)
 }
 
 // Execute exécute une commande déjà parsée et aiguille vers la bonne méthode.
-func (e *Engine) Execute(cmd Command) (any, error) {
+func (e *GoRedis) Execute(cmd Command) (any, error) {
 	switch cmd.Type {
 	case CmdSet:
 		e.Set(cmd.Key, cmd.Value)
@@ -100,7 +100,7 @@ func (e *Engine) Execute(cmd Command) (any, error) {
 }
 
 // ExecuteString parse une ligne brute puis l'exécute, en propageant l'erreur de parsing.
-func (e *Engine) ExecuteString(line string) (any, error) {
+func (e *GoRedis) ExecuteString(line string) (any, error) {
 	cmd, err := ParseCommand(line)
 	if err != nil {
 		return nil, err

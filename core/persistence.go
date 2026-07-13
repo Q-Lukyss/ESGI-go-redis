@@ -5,13 +5,13 @@ import "time"
 // recordOpLocked ajoute une opération à la file d'attente, sous verrou.
 // Appelée depuis les méthodes d'écriture (Set/Delete) — jamais depuis Restore,
 // pour ne pas re-journaliser des opérations déjà présentes sur disque.
-func (e *Engine) recordOpLocked(op Operation) {
+func (e *GoRedis) recordOpLocked(op Operation) {
 	e.opBuffer = append(e.opBuffer, op)
 }
 
 // Flush vide la file d'opérations en attente vers l'AOF. Ne fait rien si la
 // file est vide. Le verrou garantit qu'un seul flush a lieu à la fois.
-func (e *Engine) Flush() error {
+func (e *GoRedis) Flush() error {
 	e.mu.Lock()
 	pending := e.opBuffer
 	e.opBuffer = nil
@@ -24,7 +24,7 @@ func (e *Engine) Flush() error {
 }
 
 // RunFlushLoop déclenche Flush toutes les flushInterval, jusqu'à ce que stop soit fermé.
-func (e *Engine) RunFlushLoop(stop <-chan struct{}) {
+func (e *GoRedis) RunFlushLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(e.flushInterval)
 	defer ticker.Stop()
 	for {
@@ -41,7 +41,7 @@ func (e *Engine) RunFlushLoop(stop <-chan struct{}) {
 // les opérations passées sont désormais toutes couvertes par la photo
 // (compaction). Toute opération encore en attente dans le buffer est aussi
 // flushée d'abord, pour ne rien perdre.
-func (e *Engine) Snapshot() error {
+func (e *GoRedis) Snapshot() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -63,7 +63,7 @@ func (e *Engine) Snapshot() error {
 }
 
 // RunSnapshotLoop déclenche Snapshot toutes les snapshotInterval, jusqu'à ce que stop soit fermé.
-func (e *Engine) RunSnapshotLoop(stop <-chan struct{}) {
+func (e *GoRedis) RunSnapshotLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(e.snapshotInterval)
 	defer ticker.Stop()
 	for {
@@ -79,7 +79,7 @@ func (e *Engine) RunSnapshotLoop(stop <-chan struct{}) {
 // Restore reconstitue le state : on charge le snapshot, puis on rejoue
 // par-dessus chaque opération de l'AOF (les écritures survenues après la
 // dernière photo). Les opérations rejouées ne sont pas re-journalisées.
-func (e *Engine) Restore() error {
+func (e *GoRedis) Restore() error {
 	snapshot, err := e.storage.ReadSnapshot()
 	if err != nil {
 		return err
