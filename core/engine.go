@@ -12,8 +12,8 @@ type GoRedis struct {
 
 	state map[string]string
 
-	equalsIndex map[string]map[string]struct{} // valeur -> ensemble de clés (4.1)
-	rangeIndex  RangeIndex                     // pour >, >=, <, <=
+	equalsIndex map[string]map[string]struct{}
+	rangeIndex  RangeIndex // pour >, >=, <, <=
 
 	storage          Storage
 	opBuffer         []Operation
@@ -21,7 +21,6 @@ type GoRedis struct {
 	snapshotInterval time.Duration
 }
 
-// NewGoRedis construit un moteur prêt à l'emploi, avec un state vide.
 func NewGoRedis(storage Storage, flushInterval, snapshotInterval time.Duration) *GoRedis {
 	return &GoRedis{
 		state:            make(map[string]string),

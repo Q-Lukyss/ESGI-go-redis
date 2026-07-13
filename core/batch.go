@@ -9,8 +9,7 @@ type Result struct {
 	Err   error
 }
 
-// ExecuteBatch exécute une liste de commandes texte dans l'ordre et renvoie
-// la liste des résultats, alignée sur l'ordre des commandes en entrée.
+// ExecuteBatch exécute une liste de commandes
 func (e *GoRedis) ExecuteBatch(lines []string) []Result {
 	return lo.Map(lines, func(line string, _ int) Result {
 		value, err := e.ExecuteString(line)

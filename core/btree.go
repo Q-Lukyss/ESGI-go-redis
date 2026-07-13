@@ -16,10 +16,6 @@ type btreeNode struct {
 	leaf     bool
 }
 
-// BTree remplace SortedIndex (4.3) comme implémentation finale de RangeIndex :
-// mêmes garanties fonctionnelles, mais insertion/suppression/recherche en
-// O(log n) grâce à l'équilibrage. On garde les mêmes tests que SortedIndex
-// comme filet de sécurité (index_test.go).
 type BTree struct {
 	root *btreeNode
 }
