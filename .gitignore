@@ -1,6 +1,9 @@
 buffer_persistant.txt
-state.json
-state.json.bak
+state_persistant.json
+state_persistant.json.tmp
+
+.env
+
 
 .env
 /tmp
