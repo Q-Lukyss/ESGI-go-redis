@@ -2,69 +2,70 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
-	"sync"
+	"strings"
 	"time"
 
-	"strings"
-
 	"github.com/joho/godotenv"
-	"github.com/samber/lo"
+
+	"ESGI-go-redis/engine"
 )
 
 func main() {
 	fmt.Println("Démarage de GoRedis...")
 
-	// charger nos variables env
-	stateFile, bufferFile, writeInterval, updateInterval := loadEnv()
-	// pour eviter les erreurs
-	fmt.Println(writeInterval)
-	fmt.Println(updateInterval)
+	aofFile, snapshotFile, writeInterval, updateInterval := loadEnv()
 
-	goredis := NewGoRedis(bufferFile, stateFile, writeInterval, updateInterval)
+	storage := engine.NewFileStorage(aofFile, snapshotFile)
+	goredis := engine.NewEngine(storage, writeInterval, updateInterval)
 
-	// ici on veut restaurer le state
-	goredis.populate_state_on_startup()
+	// ici on veut restaurer le state (snapshot + rejeu de l'AOF par-dessus)
+	if err := goredis.Restore(); err != nil {
+		fmt.Println("Erreur lors de la restauration du state :", err)
+	}
 
-	// on prompt l'user pour lui dire que tout est ok
 	fmt.Println("GoRedis démarré.")
-	fmt.Println("[q] Pour quitter")
-	fmt.Println("[h] Pour afficher l'aide")
+	printHelp()
 	fmt.Println("En Attente de commandes : ")
 	input := bufio.NewReader(os.Stdin)
 
-	// deux methodes pour mettre a jour le buffer et le state persistent
-	// selon le tick
-	go goredis.flush_memory_buffer()
-	go goredis.save_persistent_state()
+	stop := make(chan struct{})
+	defer close(stop)
+	go goredis.RunFlushLoop(stop)
+	go goredis.RunSnapshotLoop(stop)
 
-	// on veut une boucle infini qui run le tps du programme
-	// elle prend les instructions
 	for {
 		line, _ := input.ReadString('\n')
 		line = strings.TrimSpace(line)
-		parseCommand(goredis.state, line)
-		goredis.mutex.Lock()
-		goredis.buffer = append(goredis.buffer, line)
-		goredis.mutex.Unlock()
+		if line == "" {
+			continue
+		}
+		if handled := handleReplCommand(line); handled {
+			continue
+		}
+		if strings.Contains(line, ";") {
+			runBatch(goredis, line)
+			continue
+		}
+		result, err := goredis.ExecuteString(line)
+		printResult(result, err)
 	}
 }
 
 func loadEnv() (string, string, time.Duration, time.Duration) {
-	stateFile := "state_persistant.json"
-	bufferFile := "buffer_persistant.txt"
+	aofFile := "buffer_persistant.txt"
+	snapshotFile := "state_persistant.json"
 	writeInterval := 1 * time.Second
 	updateInterval := 2 * time.Minute
 
 	if err := godotenv.Load(); err == nil {
-		if v := os.Getenv("STATE_FILE"); v != "" {
-			stateFile = v
-		}
 		if v := os.Getenv("BUFFER_FILE"); v != "" {
-			bufferFile = v
+			aofFile = v
+		}
+		if v := os.Getenv("STATE_FILE"); v != "" {
+			snapshotFile = v
 		}
 		if v := os.Getenv("WRITE_TO_BUFFER_INTERVAL"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
@@ -77,177 +78,65 @@ func loadEnv() (string, string, time.Duration, time.Duration) {
 			}
 		}
 	}
-	return stateFile, bufferFile, writeInterval, updateInterval
+	return aofFile, snapshotFile, writeInterval, updateInterval
 }
 
-// | Commande | Forme | Effet |
-// |----------|-------|-------|
-// | `SET` | `SET <key> "<value>"` | `state[arg1] = arg2` |
-// | `DELETE` | `DELETE <key>` | supprime la clé |
-// | `GET` | `GET <key>` | renvoie la valeur |
-// | `GET` filtré | `GET WHERE <champ> <op> <valeur>` | renvoie les entrées matchant le prédicat |
-
-// Opérateurs de filtre à supporter sur `GET` : **`equals`, `contains`, `>`, `>=`, `<`, `<=`**.
-func parseCommand(state map[string]any, input string) {
-	args := strings.Fields(input)
-
-	if len(args) == 0 {
-		fmt.Println("Aucune commande saisie")
-		return
-	}
-
-	switch args[0] {
-	case "SET", "set", "Set":
-		runSetCommand(state, args[1:])
-	case "DELETE", "delete", "Delete":
-		runDeleteCommand(state, args[1:])
-	case "GET", "get", "Get":
-		runGetCommand(state, args[1:])
-	case "q", "Q", "quit", "Quit":
+// handleReplCommand gère les commandes propres au REPL (pas au moteur) :
+// quitter, afficher l'aide. Renvoie true si la ligne a été prise en charge ici.
+func handleReplCommand(line string) bool {
+	switch strings.ToUpper(line) {
+	case "Q", "QUIT":
 		fmt.Println("Arret du programme")
 		os.Exit(0)
-	case "h", "H", "help", "Help":
-		fmt.Println("Aide :")
-		fmt.Println("[SET] : définit une clé avec une valeur")
-		fmt.Println("[DELETE] : supprime une clé")
-		fmt.Println("[GET] : récupère la valeur d'une clé")
-		fmt.Println("[q] : quitte le programme")
-		fmt.Println("[h] : affiche l'aide")
+	case "H", "HELP":
+		printHelp()
 	default:
-		fmt.Println("Commande inconnue : " + args[0])
+		return false
+	}
+	return true
+}
+
+// runBatch exécute plusieurs commandes séparées par ";" en un seul appel (Phase 3).
+func runBatch(goredis *engine.Engine, line string) {
+	commands := strings.Split(line, ";")
+	for i, cmd := range commands {
+		commands[i] = strings.TrimSpace(cmd)
+	}
+	for _, result := range goredis.ExecuteBatch(commands) {
+		printResult(result.Value, result.Err)
 	}
 }
 
-func runSetCommand(state map[string]any, args []string) {
-	fmt.Printf("Commande SET bien reçue : key : %s, value : %s\n", args[0], args[1])
-	state[args[0]] = args[1]
+func printHelp() {
+	fmt.Println("Aide :")
+	fmt.Println(`[SET <clé> "<valeur>"] : définit une clé avec une valeur`)
+	fmt.Println("[DELETE <clé>] : supprime une clé")
+	fmt.Println("[GET <clé>] : récupère la valeur d'une clé")
+	fmt.Println(`[GET WHERE value equals "<valeur>"] : clés dont la valeur vaut exactement <valeur>`)
+	fmt.Println(`[GET WHERE value contains "<sous-chaîne>"] : clés dont la valeur contient <sous-chaîne>`)
+	fmt.Println("[GET WHERE value >|>=|<|<= <valeur>] : clés dont la valeur satisfait la comparaison")
+	fmt.Println("[commande1 ; commande2 ; ...] : exécute plusieurs commandes en batch")
+	fmt.Println("[q] : quitte le programme")
+	fmt.Println("[h] : affiche l'aide")
 }
 
-func runDeleteCommand(state map[string]any, args []string) {
-	fmt.Printf("Commande DELETE bien reçue : key : %s\n", args[0])
-	delete(state, args[0])
-}
-
-func runGetCommand(state map[string]any, args []string) {
-	fmt.Printf("Commande GET bien reçue : key : %s\n", args[0])
-	// equivivalent de :
-	// value, ok := state[args[0]]
-	// if ok {
-	if value, ok := state[args[0]]; ok { // equivalent de
-		fmt.Println("value : pour ", args[0], " = ", value)
-	} else {
-		fmt.Println("Key non trouvée")
-	}
-}
-
-func testLoLib() {
-	names := []string{"alice", "bob", "charlie"}
-
-	// Exemple simple
-	upper := lo.Map(names, func(x string, _ int) string {
-		return strings.ToUpper(x)
-	})
-
-	fmt.Println(upper)
-}
-
-type GoRedis struct {
-	state                       map[string]any
-	buffer                      []string
-	bufferFile                  string
-	stateFilePath               string
-	writeToBufferInterval       time.Duration
-	writePeristentStateInterval time.Duration
-	mutex                       sync.Mutex
-}
-
-// Convention pour créer des structs en Go -> New + nom struct mdr
-func NewGoRedis(bufferFile, stateFile string, writeInterval, updateInterval time.Duration) *GoRedis {
-	return &GoRedis{
-		state:                       make(map[string]any),
-		buffer:                      []string{},
-		bufferFile:                  bufferFile,
-		stateFilePath:               stateFile,
-		writeToBufferInterval:       writeInterval,
-		writePeristentStateInterval: updateInterval,
-		mutex:                       sync.Mutex{},
-	}
-}
-
-func (g *GoRedis) flush_memory_buffer() {
-	ticker := time.NewTicker(g.writeToBufferInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		g.mutex.Lock()
-		buffer_data := g.buffer
-		g.buffer = nil
-		g.mutex.Unlock()
-		g.save_buffer_data_to_persistent_buffer(buffer_data)
-	}
-}
-
-func (g *GoRedis) save_buffer_data_to_persistent_buffer(buffer_data []string) {
-	if len(buffer_data) == 0 {
+func printResult(result any, err error) {
+	if err != nil {
+		fmt.Println("Erreur :", err)
 		return
 	}
-	file, err := os.OpenFile(g.bufferFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Println("Erreur lors de l'ouverture du fichier buffer persistent:", err)
-		return
+	switch v := result.(type) {
+	case nil:
+		fmt.Println("OK")
+	case []engine.Match:
+		if len(v) == 0 {
+			fmt.Println("Aucun résultat")
+			return
+		}
+		for _, match := range v {
+			fmt.Printf("%s = %s\n", match.Key, match.Value)
+		}
+	default:
+		fmt.Println(v)
 	}
-	defer file.Close()
-	_, err = file.Write([]byte(strings.Join(buffer_data, "\n") + "\n"))
-}
-
-func (g *GoRedis) save_persistent_state() {
-	// Ici on veut prendre le contenu du state
-	// et construire un state au format json en ecrasant l'ancien j'imagine
-	// La meilleure façon de faire c'est créer un fichier tmp
-	// on ecrit dans le fichier tmp et ensuite on rename ce fichier pour ecraser l'ancien
-	// ça evite la corruption des données car le rename est atomique
-	// on pas d'ancien a nouveau nom sans etat intermediaire
-	// Cependant mdr sur Windows evdemment
-	// contrairement à Linux, os.Rename n'est pas atomique
-	ticker := time.NewTicker(g.writePeristentStateInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		g.mutex.Lock()
-		// faire persister le state en json
-		g.write_state_to_persistent_state(g.state)
-		// vider le buffer persistant sous Lock
-		// pour etre sur que on ecrit pas dedans
-		os.Truncate(g.bufferFile, 0)
-		g.mutex.Unlock()
-	}
-}
-
-func (g *GoRedis) write_state_to_persistent_state(state_data map[string]any) {
-	state_json, err := json.Marshal(state_data)
-	if err != nil {
-		fmt.Println("Erreur lors de la conversion du state en json : ", err)
-		return
-	}
-	err = os.WriteFile("state.json.bak", state_json, 0644)
-	if err != nil {
-		fmt.Println("Erreur lors de l'écriture du fichier backup : ", err)
-	}
-	err = os.Rename("state.json.bak", "state.json")
-	if err != nil {
-		fmt.Println("Erreur lors du rename du fichier : ", err)
-	}
-}
-
-func (g *GoRedis) populate_state_on_startup() {
-	// Utilse lors du redémarage pour restaurer le state
-	// on recupere le contenu json du state persistant json
-	// on l'enrichie du contenu du buffer persistant
-	// on restaure la map state à jour
-	// content, err := os.ReadFile(g.bufferFile)
-	// if err != nil {
-	// 	fmt.Println("Erreur lors de la lecture du fichier : ", err)
-	// }
-	// for line := range strings.Split(string(content), "\n") {
-	// 	fmt.Println(line)
-	// }
-	fmt.Println("TODO")
 }
