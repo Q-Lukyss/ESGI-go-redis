@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Binaire WASM généré par `GOOS=js GOARCH=wasm go build -o web/public/goredis.wasm ./cmd/wasm`
+# — build artifact, pas du source. wasm_exec.js reste committé (glue runtime
+# Go, quasi jamais modifiée) pour simplifier le clone-and-run.
+public/goredis.wasm
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -42,4 +42,8 @@ export interface GoRedisClient {
   // Déclare la fenêtre actuellement visible, pour que le transport ne
   // pousse que les patchs pertinents (cf. infrastructure/ws côté Go).
   setWindow(mode: BrowseMode, windowStart: string, windowEnd: string): void
+
+  // Ferme la connexion sous-jacente (WebSocket ou Worker). À appeler avant
+  // de recréer un client (bascule de backend) ou au démontage de l'app.
+  dispose(): void
 }

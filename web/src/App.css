@@ -5,6 +5,68 @@
   font-family: system-ui, sans-serif;
 }
 
+.backend-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.backend-toggle button.active {
+  font-weight: bold;
+  text-decoration: underline;
+}
+
+.seed-panel {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.seed-panel input {
+  width: 120px;
+  padding: 6px 8px;
+}
+
+.seed-status {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.benchmark-panel {
+  margin-bottom: 16px;
+}
+
+.benchmark-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.benchmark-controls input {
+  width: 90px;
+  padding: 6px 8px;
+}
+
+.benchmark-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+
+.benchmark-table th,
+.benchmark-table td {
+  border: 1px solid #444;
+  padding: 4px 8px;
+  text-align: right;
+}
+
+.benchmark-table th:first-child,
+.benchmark-table td:first-child {
+  text-align: left;
+}
+
 .stats-panel {
   display: flex;
   gap: 24px;
@@ -70,6 +132,11 @@
   gap: 12px;
   padding: 0 12px;
   border-bottom: 1px solid #2a2a2a;
+}
+
+.row-loading {
+  color: #666;
+  font-style: italic;
 }
 
 .row-key {

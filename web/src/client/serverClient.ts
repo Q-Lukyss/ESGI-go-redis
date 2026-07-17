@@ -34,8 +34,10 @@ export function createServerClient(opts: ServerClientOptions = {}): GoRedisClien
 
   let ws: WebSocket | null = null
   let currentWindow: { mode: BrowseMode; windowStart: string; windowEnd: string } | null = null
+  let disposed = false
 
   function connect() {
+    if (disposed) return
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const url = baseUrl ? baseUrl.replace(/^http/, 'ws') + '/ws' : `${proto}//${window.location.host}/ws`
     ws = new WebSocket(url)
@@ -57,8 +59,11 @@ export function createServerClient(opts: ServerClientOptions = {}): GoRedisClien
 
     // Reconnexion simple après une coupure : sans ça, un onglet resterait
     // silencieusement "mort" côté temps réel après le moindre hoquet réseau.
+    // Sauf si dispose() a été appelé entre-temps (bascule de backend) :
+    // sans ce garde, une fermeture volontaire relancerait quand même une
+    // connexion fantôme.
     ws.addEventListener('close', () => {
-      setTimeout(connect, 1000)
+      if (!disposed) setTimeout(connect, 1000)
     })
   }
   connect()
@@ -121,6 +126,11 @@ export function createServerClient(opts: ServerClientOptions = {}): GoRedisClien
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(currentWindow))
       }
+    },
+
+    dispose() {
+      disposed = true
+      ws?.close()
     },
   }
 }

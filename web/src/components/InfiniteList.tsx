@@ -63,7 +63,23 @@ export function InfiniteList({
 
   const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
   const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2
-  const endIndex = Math.min(order.length, startIndex + visibleCount)
+  // Plafonné par la taille totale connue (totalCount), pas par order.length :
+  // sinon un saut de scroll au-delà du chargé donnerait endIndex < startIndex
+  // et la fenêtre visible deviendrait vide au lieu d'afficher des
+  // placeholders (cf. commentaire plus bas sur le rendu).
+  const endIndex = Math.min(Math.max(totalCount, order.length), startIndex + visibleCount)
+
+  // hasMore=false signifie "rien de plus à charger à la dernière tentative",
+  // pas "le store ne grandira jamais" : avec le backend WASM, le store peut
+  // être vide au montage (avant le seed déclenché depuis l'UI) puis se
+  // remplir après coup. Sans ça, le premier browse() sur un store vide fixe
+  // hasMore=false et plus rien ne relance jamais loadMore, même une fois le
+  // seed terminé (bug réel rencontré ici : liste bloquée en placeholders).
+  useEffect(() => {
+    if (!hasMore && totalCount > order.length) {
+      setHasMore(true)
+    }
+  }, [totalCount, order.length, hasMore])
 
   // Charge la page suivante quand le scroll approche la fin du déjà-chargé.
   useEffect(() => {
@@ -102,8 +118,15 @@ export function InfiniteList({
     })
   }, [client])
 
-  const visibleKeys = order.slice(startIndex, endIndex)
   const totalHeight = Math.max(totalCount, order.length) * rowHeight
+
+  // La pagination par curseur ne charge que séquentiellement depuis le
+  // début (c'est le prix du O(log n) plutôt qu'un offset O(n) sur 1M
+  // entrées, cf. TODO.md) : un grand saut de scroll (glisser la scrollbar)
+  // peut viser un index bien au-delà de ce qui est chargé. Plutôt que de
+  // laisser un vide muet, on affiche un placeholder honnête pour tout index
+  // pas encore chargé pendant que le chargement séquentiel rattrape.
+  const visibleIndices = Array.from({ length: Math.max(0, endIndex - startIndex) }, (_, i) => startIndex + i)
 
   return (
     <div
@@ -112,9 +135,21 @@ export function InfiniteList({
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
     >
       <div style={{ height: totalHeight, position: 'relative' }}>
-        {visibleKeys.map((key, i) => (
-          <Row key={key} store={storeRef.current} rowKey={key} top={(startIndex + i) * rowHeight} height={rowHeight} />
-        ))}
+        {visibleIndices.map((idx) => {
+          const key = order[idx]
+          if (key === undefined) {
+            return (
+              <div
+                key={`loading-${idx}`}
+                className="row row-loading"
+                style={{ position: 'absolute', top: idx * rowHeight, height: rowHeight, left: 0, right: 0 }}
+              >
+                …
+              </div>
+            )
+          }
+          return <Row key={key} store={storeRef.current} rowKey={key} top={idx * rowHeight} height={rowHeight} />
+        })}
       </div>
     </div>
   )

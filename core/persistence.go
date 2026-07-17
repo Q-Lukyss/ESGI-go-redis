@@ -46,21 +46,31 @@ func (e *GoRedis) RunFlushLoop(stop <-chan struct{}) {
 // les opérations passées sont désormais toutes couvertes par la photo
 // (compaction). Toute opération encore en attente dans le buffer est aussi
 // flushée d'abord, pour ne rien perdre.
+//
+// Le verrou est relâché AVANT les appels à Storage (comme Flush) : pour le
+// backend WASM, ces appels attendent une Promise JS (OPFS), donc yield vers
+// la boucle d'évènements du navigateur. Si e.mu restait tenu pendant ce
+// temps, le moindre message entrant nécessitant aussi e.mu (ex. "browse")
+// se bloquerait dessus — et comme il tournerait lui-même dans un callback
+// JS synchrone, la boucle d'évènements ne pourrait jamais revenir traiter
+// la Promise qui devait débloquer Snapshot : interblocage. Bug réel
+// rencontré (seed jamais terminé) et corrigé ici.
 func (e *GoRedis) Snapshot() error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if len(e.opBuffer) > 0 {
-		if err := e.storage.AppendAOF(e.opBuffer); err != nil {
-			return err
-		}
-		e.opBuffer = nil
-		e.bufferCount.Store(0)
-	}
+	pending := e.opBuffer
+	e.opBuffer = nil
+	e.bufferCount.Store(0)
 
 	stateCopy := make(map[string]SnapshotEntry, len(e.state))
 	for k, v := range e.state {
 		stateCopy[k] = SnapshotEntry{Value: v, Timestamp: e.timestamps[k]}
+	}
+	e.mu.Unlock()
+
+	if len(pending) > 0 {
+		if err := e.storage.AppendAOF(pending); err != nil {
+			return err
+		}
 	}
 	if err := e.storage.WriteSnapshot(stateCopy); err != nil {
 		return err
