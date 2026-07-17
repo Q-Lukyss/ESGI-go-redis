@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,8 +12,8 @@ import (
 
 // Match est une entrée clé/valeur renvoyée par un GET WHERE.
 type Match struct {
-	Key   string
-	Value string
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 // RangeIndex maintient un index ordonné valeur -> clés, pour répondre aux
@@ -63,7 +64,7 @@ func (e *GoRedis) addToIndexesLocked(key, value string, ts int64) {
 	e.equalsIndex[value][key] = struct{}{}
 	e.rangeIndex.Insert(value, key)
 	e.keyIndex.Insert(escapeNumeric(key), key)
-	e.timeIndex.Insert(escapeNumeric(encodeTimestamp(ts)), key)
+	e.timeIndex.Insert(escapeNumeric(encodeTimestamp(invertForDescending(ts))), key)
 	e.timestamps[key] = ts
 }
 
@@ -79,7 +80,7 @@ func (e *GoRedis) removeFromIndexesLocked(key, value string) {
 	e.rangeIndex.Delete(value, key)
 	e.keyIndex.Delete(escapeNumeric(key), key)
 	if oldTs, ok := e.timestamps[key]; ok {
-		e.timeIndex.Delete(escapeNumeric(encodeTimestamp(oldTs)), key)
+		e.timeIndex.Delete(escapeNumeric(encodeTimestamp(invertForDescending(oldTs))), key)
 		delete(e.timestamps, key)
 	}
 }
@@ -152,6 +153,17 @@ func sortKey(value string) string {
 // tout int64 positif), pour que timeIndex trie chronologiquement.
 func encodeTimestamp(nano int64) string {
 	return fmt.Sprintf("%020d", nano)
+}
+
+// invertForDescending inverse un timestamp pour que le parcours ascendant
+// de BTree.RangeFrom (le seul sens qu'il sait parcourir) donne les entrées
+// du plus récent au plus ancien dans timeIndex : le mode "Activity" est un
+// fil d'actualité (dernières modifs en premier), pas un historique depuis
+// l'origine. MaxInt64 - nano reste positif tant que nano l'est (toujours
+// vrai pour un unix-nano réel), donc encodeTimestamp reste applicable telle
+// quelle sur le résultat.
+func invertForDescending(nano int64) int64 {
+	return math.MaxInt64 - nano
 }
 
 // escapeNumeric force sortKey() dans son branch texte (non numérique), même

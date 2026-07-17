@@ -22,9 +22,13 @@ const (
 // déclarer sa fenêtre visible en mode "time" sans connaître l'encodage
 // interne des index.
 type BrowseEntry struct {
-	Key       string
-	Value     string
-	Timestamp int64
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	// Timestamp est en unix-nano (~1.7e18) : au-delà de 2^53, un JSON
+	// number perdrait en précision une fois désérialisé en JS/TS (IEEE754
+	// double). ",string" force un encodage en chaîne pour un aller-retour
+	// exact ; le front le lit via BigInt.
+	Timestamp int64 `json:"timestamp,string"`
 }
 
 // Browse pagine l'ensemble du store par curseur, triée selon mode. Conçue
