@@ -53,14 +53,18 @@ func matchesRange(itemSortKey string, op FilterOp, thresholdKey string) bool {
 	}
 }
 
-// addToIndexesLocked maintient l'index inversé (equals) et l'index de range
-// à jour à chaque écriture. Appelée sous verrou par setLocked.
-func (e *GoRedis) addToIndexesLocked(key, value string) {
+// addToIndexesLocked maintient l'index inversé (equals), l'index de range,
+// l'index par clé et l'index par timestamp à jour à chaque écriture.
+// Appelée sous verrou par setLocked.
+func (e *GoRedis) addToIndexesLocked(key, value string, ts int64) {
 	if e.equalsIndex[value] == nil {
 		e.equalsIndex[value] = make(map[string]struct{})
 	}
 	e.equalsIndex[value][key] = struct{}{}
 	e.rangeIndex.Insert(value, key)
+	e.keyIndex.Insert(escapeNumeric(key), key)
+	e.timeIndex.Insert(escapeNumeric(encodeTimestamp(ts)), key)
+	e.timestamps[key] = ts
 }
 
 // removeFromIndexesLocked retire une clé des index. Appelée sous verrou par
@@ -73,6 +77,11 @@ func (e *GoRedis) removeFromIndexesLocked(key, value string) {
 		}
 	}
 	e.rangeIndex.Delete(value, key)
+	e.keyIndex.Delete(escapeNumeric(key), key)
+	if oldTs, ok := e.timestamps[key]; ok {
+		e.timeIndex.Delete(escapeNumeric(encodeTimestamp(oldTs)), key)
+		delete(e.timestamps, key)
+	}
 }
 
 // GetWhere évalue un prédicat sur les valeurs du store et renvoie les
@@ -109,11 +118,19 @@ func (e *GoRedis) matchesFromKeySetLocked(keys map[string]struct{}) []Match {
 }
 
 func (e *GoRedis) matchesFromKeysLocked(keys []string) []Match {
-	matches := lo.Map(keys, func(key string, _ int) Match {
-		return Match{Key: key, Value: e.state[key]}
-	})
+	matches := e.matchesFromOrderedKeysLocked(keys)
 	sort.Slice(matches, func(i, j int) bool { return matches[i].Key < matches[j].Key })
 	return matches
+}
+
+// matchesFromOrderedKeysLocked résout des clés déjà triées (ex. par
+// BTree.RangeFrom) en Match, sans retrier — contrairement à
+// matchesFromKeysLocked, l'ordre du paramètre keys est préservé (mode
+// "Activity" du scroll infini : tri chronologique, pas alphabétique).
+func (e *GoRedis) matchesFromOrderedKeysLocked(keys []string) []Match {
+	return lo.Map(keys, func(key string, _ int) Match {
+		return Match{Key: key, Value: e.state[key]}
+	})
 }
 
 // sortKey normalise une valeur en une clé de tri lexicographique.
@@ -128,4 +145,23 @@ func sortKey(value string) string {
 		return "0" + fmt.Sprintf("%030.6f", f+offset)
 	}
 	return "1" + value
+}
+
+// encodeTimestamp normalise un timestamp unix-nano en chaîne triable
+// lexicographiquement (zero-paddée sur 20 chiffres, largeur suffisante pour
+// tout int64 positif), pour que timeIndex trie chronologiquement.
+func encodeTimestamp(nano int64) string {
+	return fmt.Sprintf("%020d", nano)
+}
+
+// escapeNumeric force sortKey() dans son branch texte (non numérique), même
+// si s ressemble à un nombre. keyIndex et timeIndex ont besoin d'un tri
+// lexicographique brut et déterministe sur des chaînes déjà normalisées
+// (une clé, ou un timestamp zero-paddé) : la détection numérique de
+// sortKey() — pensée pour les valeurs de GET WHERE (ex. age > 18) — encode
+// via un float64, ce qui perdrait en précision sur un timestamp unix-nano
+// (~1.7e18, hors de la plage d'entiers exacts d'un float64) et romprait
+// le tri chronologique.
+func escapeNumeric(s string) string {
+	return "\x01" + s
 }

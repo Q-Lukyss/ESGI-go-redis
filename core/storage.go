@@ -1,9 +1,10 @@
 package core
 
 type Operation struct {
-	Type  CommandType `json:"type"`
-	Key   string      `json:"key"`
-	Value string      `json:"value,omitempty"`
+	Type      CommandType `json:"type"`
+	Key       string      `json:"key"`
+	Value     string      `json:"value,omitempty"`
+	Timestamp int64       `json:"timestamp,omitempty"` // unix nano ; absent (0) sur les anciennes entrées AOF
 }
 
 // Storage découple le moteur de son support physique. Le moteur ne sait

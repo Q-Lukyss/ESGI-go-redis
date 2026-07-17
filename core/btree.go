@@ -2,9 +2,29 @@ package core
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/samber/lo"
 )
+
+// cursorSep sépare sortKey et clé dans un curseur opaque de pagination.
+// \x00 n'apparaît jamais dans une sortKey normalisée (escapeNumeric,
+// encodeTimestamp) ni dans une clé applicative normale.
+const cursorSep = "\x00"
+
+func makeCursor(sortKey, key string) string {
+	return sortKey + cursorSep + key
+}
+
+// splitCursor décompose un curseur ; un curseur vide ou malformé équivaut à
+// "démarrer depuis le début".
+func splitCursor(cursor string) (sortKey, key string) {
+	parts := strings.SplitN(cursor, cursorSep, 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
 
 // btreeDegree est le degré minimum t du B-Tree : chaque nœud (hors racine)
 // porte entre t-1 et 2t-1 items, et entre t et 2t enfants.
@@ -243,4 +263,59 @@ func (t *BTree) Range(op FilterOp, threshold string) []string {
 	}
 	walk(t.root)
 	return result
+}
+
+// RangeFrom parcourt le B-Tree en ordre à partir de (juste après) cursor et
+// renvoie au plus limit clés, avec un curseur opaque pour reprendre à la
+// page suivante. cursor == "" démarre depuis le début. Contrairement à
+// Range (qui matérialise tout le résultat pour GET WHERE), RangeFrom ne
+// charge jamais plus que la page demandée : c'est la brique du scroll
+// infini sur une base de plusieurs millions d'entrées.
+func (t *BTree) RangeFrom(cursor string, limit int) (keys []string, nextCursor string, hasMore bool) {
+	cursorSort, cursorKey := splitCursor(cursor)
+
+	// On collecte jusqu'à limit+1 curseurs candidats : le +1, s'il est
+	// atteint, prouve qu'il reste au moins un élément après la page (évite
+	// un aller-retour supplémentaire juste pour savoir si hasMore).
+	var collected []string
+	var walk func(n *btreeNode) bool
+	walk = func(n *btreeNode) bool {
+		for i, item := range n.items {
+			if !n.leaf && walk(n.children[i]) {
+				return true
+			}
+			if item.sortKey < cursorSort {
+				continue
+			}
+			itemKeys := lo.Keys(item.keys)
+			sort.Strings(itemKeys)
+			for _, key := range itemKeys {
+				if item.sortKey == cursorSort && key <= cursorKey {
+					continue
+				}
+				collected = append(collected, makeCursor(item.sortKey, key))
+				if len(collected) > limit {
+					return true
+				}
+			}
+		}
+		if !n.leaf && walk(n.children[len(n.children)-1]) {
+			return true
+		}
+		return false
+	}
+	walk(t.root)
+
+	hasMore = len(collected) > limit
+	if hasMore {
+		collected = collected[:limit]
+	}
+	keys = lo.Map(collected, func(c string, _ int) string {
+		_, key := splitCursor(c)
+		return key
+	})
+	if len(collected) > 0 {
+		nextCursor = collected[len(collected)-1]
+	}
+	return keys, nextCursor, hasMore
 }

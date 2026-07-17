@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,12 +14,19 @@ type GoRedis struct {
 	state map[string]string
 
 	equalsIndex map[string]map[string]struct{}
-	rangeIndex  RangeIndex // pour >, >=, <, <=
+	rangeIndex  RangeIndex       // pour >, >=, <, <=
+	keyIndex    *BTree           // parcours trié par clé, paginé (scroll infini, mode "Browse")
+	timeIndex   *BTree           // parcours trié par date de dernière écriture, paginé (mode "Activity")
+	timestamps  map[string]int64 // dernier timestamp (unix nano) connu par clé, pour retirer proprement de timeIndex
 
 	storage          Storage
 	opBuffer         []Operation
 	flushInterval    time.Duration
 	snapshotInterval time.Duration
+
+	stateCount  atomic.Int64 // miroir de len(state), lisible sans prendre mu
+	bufferCount atomic.Int64 // miroir de len(opBuffer), lisible sans prendre mu
+	changes     chan ChangeEvent
 }
 
 func NewGoRedis(storage Storage, flushInterval, snapshotInterval time.Duration) *GoRedis {
@@ -26,19 +34,31 @@ func NewGoRedis(storage Storage, flushInterval, snapshotInterval time.Duration) 
 		state:            make(map[string]string),
 		equalsIndex:      make(map[string]map[string]struct{}),
 		rangeIndex:       NewBTree(),
+		keyIndex:         NewBTree(),
+		timeIndex:        NewBTree(),
+		timestamps:       make(map[string]int64),
 		storage:          storage,
 		opBuffer:         nil,
 		flushInterval:    flushInterval,
 		snapshotInterval: snapshotInterval,
+		changes:          make(chan ChangeEvent, changesBufferSize),
 	}
 }
 
-// Set pose une valeur pour une clé (écrase si déjà présente).
+// Set pose une valeur pour une clé (écrase si déjà présente), horodatée à
+// l'instant présent.
 func (e *GoRedis) Set(key, value string) {
+	e.SetAt(key, value, time.Now())
+}
+
+// SetAt pose une valeur pour une clé avec un timestamp explicite. Utilisée
+// par Set (avec l'heure courante) et par les scripts de seed, qui ont
+// besoin de répartir des timestamps dans le temps pour peupler une démo.
+func (e *GoRedis) SetAt(key, value string, ts time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.setLocked(key, value)
-	e.recordOpLocked(Operation{Type: CmdSet, Key: key, Value: value})
+	e.setLocked(key, value, ts)
+	e.recordOpLocked(Operation{Type: CmdSet, Key: key, Value: value, Timestamp: ts.UnixNano()})
 }
 
 // Get lit une valeur ; erreur si la clé est absente.
@@ -60,18 +80,19 @@ func (e *GoRedis) Delete(key string) error {
 		return fmt.Errorf("clé absente: %s", key)
 	}
 	e.deleteLocked(key)
-	e.recordOpLocked(Operation{Type: CmdDelete, Key: key})
+	e.recordOpLocked(Operation{Type: CmdDelete, Key: key, Timestamp: time.Now().UnixNano()})
 	return nil
 }
 
 // setLocked applique un SET au state + index, sans toucher au buffer ni au verrou.
-// Appelée aussi bien par Set() (nouvelle écriture) que par Restore() (rejeu).
-func (e *GoRedis) setLocked(key, value string) {
+// Appelée aussi bien par SetAt() (nouvelle écriture) que par Restore() (rejeu).
+func (e *GoRedis) setLocked(key, value string, ts time.Time) {
 	if old, ok := e.state[key]; ok {
 		e.removeFromIndexesLocked(key, old)
 	}
 	e.state[key] = value
-	e.addToIndexesLocked(key, value)
+	e.addToIndexesLocked(key, value, ts.UnixNano())
+	e.stateCount.Store(int64(len(e.state)))
 }
 
 // deleteLocked applique un DELETE au state + index, sans toucher au buffer ni au verrou.
@@ -79,7 +100,15 @@ func (e *GoRedis) deleteLocked(key string) {
 	old := e.state[key]
 	delete(e.state, key)
 	e.removeFromIndexesLocked(key, old)
+	e.stateCount.Store(int64(len(e.state)))
 }
+
+// StateCount et BufferCount donnent une vue instantanée des tailles du store
+// et de la file d'écritures en attente, sans jamais prendre mu — pensé pour
+// un ticker de stats (WS/wasmbridge) qui ne doit pas entrer en contention
+// avec le chemin d'écriture.
+func (e *GoRedis) StateCount() int64  { return e.stateCount.Load() }
+func (e *GoRedis) BufferCount() int64 { return e.bufferCount.Load() }
 
 // Execute exécute une commande déjà parsée et aiguille vers la bonne méthode.
 func (e *GoRedis) Execute(cmd Command) (any, error) {

@@ -7,6 +7,8 @@ import "time"
 // pour ne pas re-journaliser des opérations déjà présentes sur disque.
 func (e *GoRedis) recordOpLocked(op Operation) {
 	e.opBuffer = append(e.opBuffer, op)
+	e.bufferCount.Store(int64(len(e.opBuffer)))
+	e.publishChangeLocked(op)
 }
 
 // Flush vide la file d'opérations en attente vers l'AOF. Ne fait rien si la
@@ -15,6 +17,7 @@ func (e *GoRedis) Flush() error {
 	e.mu.Lock()
 	pending := e.opBuffer
 	e.opBuffer = nil
+	e.bufferCount.Store(0)
 	e.mu.Unlock()
 
 	if len(pending) == 0 {
@@ -50,6 +53,7 @@ func (e *GoRedis) Snapshot() error {
 			return err
 		}
 		e.opBuffer = nil
+		e.bufferCount.Store(0)
 	}
 
 	stateCopy := make(map[string]string, len(e.state))
@@ -95,14 +99,23 @@ func (e *GoRedis) Restore() error {
 	e.state = make(map[string]string)
 	e.equalsIndex = make(map[string]map[string]struct{})
 	e.rangeIndex = NewBTree()
+	e.keyIndex = NewBTree()
+	e.timeIndex = NewBTree()
+	e.timestamps = make(map[string]int64)
 
+	// Le snapshot ne porte pas de timestamp par clé (juste clé -> valeur) :
+	// on horodate ces entrées à l'instant du restore. Conséquence assumée :
+	// après un restart, la vue "Activity" (tri par timestamp) regroupe tout
+	// l'état pré-snapshot au même instant, seules les opérations rejouées
+	// depuis l'AOF gardent leur vraie chronologie.
+	now := time.Now()
 	for key, value := range snapshot {
-		e.setLocked(key, value)
+		e.setLocked(key, value, now)
 	}
 	for _, op := range ops {
 		switch op.Type {
 		case CmdSet:
-			e.setLocked(op.Key, op.Value)
+			e.setLocked(op.Key, op.Value, time.Unix(0, op.Timestamp))
 		case CmdDelete:
 			e.deleteLocked(op.Key)
 		}
