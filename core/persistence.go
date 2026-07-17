@@ -58,9 +58,9 @@ func (e *GoRedis) Snapshot() error {
 		e.bufferCount.Store(0)
 	}
 
-	stateCopy := make(map[string]string, len(e.state))
+	stateCopy := make(map[string]SnapshotEntry, len(e.state))
 	for k, v := range e.state {
-		stateCopy[k] = v
+		stateCopy[k] = SnapshotEntry{Value: v, Timestamp: e.timestamps[k]}
 	}
 	if err := e.storage.WriteSnapshot(stateCopy); err != nil {
 		return err
@@ -105,14 +105,8 @@ func (e *GoRedis) Restore() error {
 	e.timeIndex = NewBTree()
 	e.timestamps = make(map[string]int64)
 
-	// Le snapshot ne porte pas de timestamp par clé (juste clé -> valeur) :
-	// on horodate ces entrées à l'instant du restore. Conséquence assumée :
-	// après un restart, la vue "Activity" (tri par timestamp) regroupe tout
-	// l'état pré-snapshot au même instant, seules les opérations rejouées
-	// depuis l'AOF gardent leur vraie chronologie.
-	now := time.Now()
-	for key, value := range snapshot {
-		e.setLocked(key, value, now)
+	for key, entry := range snapshot {
+		e.setLocked(key, entry.Value, time.Unix(0, entry.Timestamp))
 	}
 	for _, op := range ops {
 		switch op.Type {

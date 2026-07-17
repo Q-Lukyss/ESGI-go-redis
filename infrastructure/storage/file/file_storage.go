@@ -83,7 +83,7 @@ func (s *Storage) ClearAOF() error {
 	return os.WriteFile(s.aofPath, nil, 0644)
 }
 
-func (s *Storage) WriteSnapshot(state map[string]string) error {
+func (s *Storage) WriteSnapshot(state map[string]core.SnapshotEntry) error {
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -98,18 +98,18 @@ func (s *Storage) WriteSnapshot(state map[string]string) error {
 	return os.Rename(tmpPath, s.snapshotPath)
 }
 
-func (s *Storage) ReadSnapshot() (map[string]string, error) {
+func (s *Storage) ReadSnapshot() (map[string]core.SnapshotEntry, error) {
 	data, err := os.ReadFile(s.snapshotPath)
 	if os.IsNotExist(err) {
-		return make(map[string]string), nil
+		return make(map[string]core.SnapshotEntry), nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	if len(data) == 0 {
-		return make(map[string]string), nil
+		return make(map[string]core.SnapshotEntry), nil
 	}
-	state := make(map[string]string)
+	state := make(map[string]core.SnapshotEntry)
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
