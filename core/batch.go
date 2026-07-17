@@ -9,10 +9,13 @@ type Result struct {
 	Err   error
 }
 
-// ExecuteBatch exécute une liste de commandes
-func (e *GoRedis) ExecuteBatch(lines []string) []Result {
-	return lo.Map(lines, func(line string, _ int) Result {
-		value, err := e.ExecuteString(line)
+// ExecuteBatch exécute une liste de commandes déjà structurées (transport-
+// agnostique : REST/WASM peuvent construire directement des Command sans
+// passer par la syntaxe texte du REPL, cf. infrastructure/repl pour la
+// variante qui parse des lignes brutes).
+func (e *GoRedis) ExecuteBatch(cmds []Command) []Result {
+	return lo.Map(cmds, func(cmd Command, _ int) Result {
+		value, err := e.Execute(cmd)
 		return Result{Value: value, Err: err}
 	})
 }

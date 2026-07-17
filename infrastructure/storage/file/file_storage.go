@@ -1,23 +1,30 @@
-package core
+// Package file implémente core.Storage sur le système de fichiers natif
+// (AOF en append, snapshot JSON). C'est l'adaptateur de stockage utilisé
+// par le backend serveur (cmd/server, cmd/seed) ; le backend WASM utilise
+// son propre adaptateur (infrastructure/storage/opfs), tous deux
+// interchangeables derrière core.Storage.
+package file
 
 import (
 	"bufio"
 	"encoding/json"
 	"os"
+
+	"ESGI-go-redis/core"
 )
 
-// FileStorage est l'implémentation de Storage avec un fichier AOF
-type FileStorage struct {
+// Storage est l'implémentation de core.Storage avec un fichier AOF.
+type Storage struct {
 	aofPath      string
 	snapshotPath string
 }
 
-// NewFileStorage crée un Storage basé sur deux fichiers du disque.
-func NewFileStorage(aofPath, snapshotPath string) *FileStorage {
-	return &FileStorage{aofPath: aofPath, snapshotPath: snapshotPath}
+// New crée un Storage basé sur deux fichiers du disque.
+func New(aofPath, snapshotPath string) *Storage {
+	return &Storage{aofPath: aofPath, snapshotPath: snapshotPath}
 }
 
-func (s *FileStorage) AppendAOF(ops []Operation) error {
+func (s *Storage) AppendAOF(ops []core.Operation) error {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -43,7 +50,7 @@ func (s *FileStorage) AppendAOF(ops []Operation) error {
 	return writer.Flush()
 }
 
-func (s *FileStorage) ReadAOF() ([]Operation, error) {
+func (s *Storage) ReadAOF() ([]core.Operation, error) {
 	file, err := os.Open(s.aofPath)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -53,14 +60,14 @@ func (s *FileStorage) ReadAOF() ([]Operation, error) {
 	}
 	defer file.Close()
 
-	var ops []Operation
+	var ops []core.Operation
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
-		var op Operation
+		var op core.Operation
 		if err := json.Unmarshal(line, &op); err != nil {
 			return nil, err
 		}
@@ -72,11 +79,11 @@ func (s *FileStorage) ReadAOF() ([]Operation, error) {
 	return ops, nil
 }
 
-func (s *FileStorage) ClearAOF() error {
+func (s *Storage) ClearAOF() error {
 	return os.WriteFile(s.aofPath, nil, 0644)
 }
 
-func (s *FileStorage) WriteSnapshot(state map[string]string) error {
+func (s *Storage) WriteSnapshot(state map[string]string) error {
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -91,7 +98,7 @@ func (s *FileStorage) WriteSnapshot(state map[string]string) error {
 	return os.Rename(tmpPath, s.snapshotPath)
 }
 
-func (s *FileStorage) ReadSnapshot() (map[string]string, error) {
+func (s *Storage) ReadSnapshot() (map[string]string, error) {
 	data, err := os.ReadFile(s.snapshotPath)
 	if os.IsNotExist(err) {
 		return make(map[string]string), nil

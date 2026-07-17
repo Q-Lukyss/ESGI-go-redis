@@ -57,8 +57,8 @@ func (e *GoRedis) Set(key, value string) {
 func (e *GoRedis) SetAt(key, value string, ts time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.setLocked(key, value, ts)
-	e.recordOpLocked(Operation{Type: CmdSet, Key: key, Value: value, Timestamp: ts.UnixNano()})
+	existed := e.setLocked(key, value, ts)
+	e.recordOpLocked(Operation{Type: CmdSet, Key: key, Value: value, Timestamp: ts.UnixNano()}, !existed)
 }
 
 // Get lit une valeur ; erreur si la clé est absente.
@@ -80,19 +80,24 @@ func (e *GoRedis) Delete(key string) error {
 		return fmt.Errorf("clé absente: %s", key)
 	}
 	e.deleteLocked(key)
-	e.recordOpLocked(Operation{Type: CmdDelete, Key: key, Timestamp: time.Now().UnixNano()})
+	e.recordOpLocked(Operation{Type: CmdDelete, Key: key, Timestamp: time.Now().UnixNano()}, false)
 	return nil
 }
 
 // setLocked applique un SET au state + index, sans toucher au buffer ni au verrou.
 // Appelée aussi bien par SetAt() (nouvelle écriture) que par Restore() (rejeu).
-func (e *GoRedis) setLocked(key, value string, ts time.Time) {
+// Renvoie existed=true si la clé remplaçait une valeur précédente (utile aux
+// transports pour distinguer une simple mise à jour de valeur — patchable en
+// place — d'une insertion, qui change la position dans keyIndex/timeIndex).
+func (e *GoRedis) setLocked(key, value string, ts time.Time) (existed bool) {
 	if old, ok := e.state[key]; ok {
 		e.removeFromIndexesLocked(key, old)
+		existed = true
 	}
 	e.state[key] = value
 	e.addToIndexesLocked(key, value, ts.UnixNano())
 	e.stateCount.Store(int64(len(e.state)))
+	return existed
 }
 
 // deleteLocked applique un DELETE au state + index, sans toucher au buffer ni au verrou.
@@ -125,13 +130,4 @@ func (e *GoRedis) Execute(cmd Command) (any, error) {
 	default:
 		return nil, fmt.Errorf("type de commande non géré: %s", cmd.Type)
 	}
-}
-
-// ExecuteString parse une ligne brute puis l'exécute, en propageant l'erreur de parsing.
-func (e *GoRedis) ExecuteString(line string) (any, error) {
-	cmd, err := ParseCommand(line)
-	if err != nil {
-		return nil, err
-	}
-	return e.Execute(cmd)
 }

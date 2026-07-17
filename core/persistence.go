@@ -5,10 +5,12 @@ import "time"
 // recordOpLocked ajoute une opération à la file d'attente, sous verrou.
 // Appelée depuis les méthodes d'écriture (Set/Delete) — jamais depuis Restore,
 // pour ne pas re-journaliser des opérations déjà présentes sur disque.
-func (e *GoRedis) recordOpLocked(op Operation) {
+// isNew indique si un SET a créé la clé (sans objet pour un DELETE) ; voir
+// ChangeEvent.IsNew.
+func (e *GoRedis) recordOpLocked(op Operation, isNew bool) {
 	e.opBuffer = append(e.opBuffer, op)
 	e.bufferCount.Store(int64(len(e.opBuffer)))
-	e.publishChangeLocked(op)
+	e.publishChangeLocked(op, isNew)
 }
 
 // Flush vide la file d'opérations en attente vers l'AOF. Ne fait rien si la
