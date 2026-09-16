@@ -5,6 +5,7 @@ type Operation struct {
 	Key       string      `json:"key"`
 	Value     string      `json:"value,omitempty"`
 	Timestamp int64       `json:"timestamp,omitempty"` // unix nano ; absent (0) sur les anciennes entrées AOF
+	ExpiresAt int64       `json:"expiresAt,omitempty"` // unix nano ; 0 = pas de TTL
 }
 
 // SnapshotEntry porte le timestamp de dernière écriture avec la valeur.
@@ -15,6 +16,7 @@ type Operation struct {
 type SnapshotEntry struct {
 	Value     string `json:"value"`
 	Timestamp int64  `json:"timestamp"`
+	ExpiresAt int64  `json:"expiresAt,omitempty"` // unix nano ; 0 = pas de TTL
 }
 
 // Storage découple le moteur de son support physique. Le moteur ne sait

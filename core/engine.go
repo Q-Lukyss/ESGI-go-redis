@@ -18,30 +18,40 @@ type GoRedis struct {
 	keyIndex    *BTree           // parcours trié par clé, paginé (scroll infini, mode "Browse")
 	timeIndex   *BTree           // parcours trié par date de dernière écriture, paginé (mode "Activity")
 	timestamps  map[string]int64 // dernier timestamp (unix nano) connu par clé, pour retirer proprement de timeIndex
+	expireAt    map[string]int64 // unix nano d'expiration par clé ; absent = pas de TTL (cf. core/ttl.go)
 
-	storage          Storage
-	opBuffer         []Operation
-	flushInterval    time.Duration
-	snapshotInterval time.Duration
+	storage             Storage
+	opBuffer            []Operation
+	flushInterval       time.Duration
+	snapshotInterval    time.Duration
+	expirySweepInterval time.Duration
+	defaultTTLSeconds   int64 // TTL appliqué à un SET sans EX explicite ; <= 0 = désactivé (comportement Redis standard)
+	btreeDegree         int   // ordre du B-Tree, retenu pour que Restore() recrée les index au même ordre
 
 	stateCount  atomic.Int64 // miroir de len(state), lisible sans prendre mu
 	bufferCount atomic.Int64 // miroir de len(opBuffer), lisible sans prendre mu
 	changes     chan ChangeEvent
 }
 
-func NewGoRedis(storage Storage, flushInterval, snapshotInterval time.Duration) *GoRedis {
+// NewGoRedis construit le moteur à partir de cfg (cf. Config, DefaultConfig) :
+// aucune valeur de tuning n'est câblée en dur ici, tout vient de l'appelant.
+func NewGoRedis(storage Storage, cfg Config) *GoRedis {
 	return &GoRedis{
-		state:            make(map[string]string),
-		equalsIndex:      make(map[string]map[string]struct{}),
-		rangeIndex:       NewBTree(),
-		keyIndex:         NewBTree(),
-		timeIndex:        NewBTree(),
-		timestamps:       make(map[string]int64),
-		storage:          storage,
-		opBuffer:         nil,
-		flushInterval:    flushInterval,
-		snapshotInterval: snapshotInterval,
-		changes:          make(chan ChangeEvent, changesBufferSize),
+		state:               make(map[string]string),
+		equalsIndex:         make(map[string]map[string]struct{}),
+		rangeIndex:          NewBTree(cfg.BTreeDegree),
+		keyIndex:            NewBTree(cfg.BTreeDegree),
+		timeIndex:           NewBTree(cfg.BTreeDegree),
+		timestamps:          make(map[string]int64),
+		expireAt:            make(map[string]int64),
+		storage:             storage,
+		opBuffer:            nil,
+		flushInterval:       cfg.FlushInterval,
+		snapshotInterval:    cfg.SnapshotInterval,
+		expirySweepInterval: cfg.ExpirySweepInterval,
+		defaultTTLSeconds:   cfg.DefaultTTLSeconds,
+		btreeDegree:         cfg.BTreeDegree,
+		changes:             make(chan ChangeEvent, cfg.ChangesBufferSize),
 	}
 }
 
@@ -51,20 +61,34 @@ func (e *GoRedis) Set(key, value string) {
 	e.SetAt(key, value, time.Now())
 }
 
-// SetAt pose une valeur pour une clé avec un timestamp explicite. Utilisée
-// par Set (avec l'heure courante) et par les scripts de seed, qui ont
-// besoin de répartir des timestamps dans le temps pour peupler une démo.
+// SetAt pose une valeur pour une clé avec un timestamp explicite, sans TTL.
+// Utilisée par Set (avec l'heure courante) et par les scripts de seed, qui
+// ont besoin de répartir des timestamps dans le temps pour peupler une démo.
 func (e *GoRedis) SetAt(key, value string, ts time.Time) {
+	e.setAtWithExpiry(key, value, ts, 0)
+}
+
+// setAtWithExpiry est le point d'entrée commun à tous les SET (avec ou sans
+// TTL) : applique state+index, pose/efface l'expiration de la clé, puis
+// journalise. expiresAt <= 0 signifie "pas de TTL" (efface une expiration
+// précédente, comme un SET sans EX écrase le TTL dans Redis).
+func (e *GoRedis) setAtWithExpiry(key, value string, ts time.Time, expiresAt int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	existed := e.setLocked(key, value, ts)
-	e.recordOpLocked(Operation{Type: CmdSet, Key: key, Value: value, Timestamp: ts.UnixNano()}, !existed)
+	e.setExpiryLocked(key, expiresAt)
+	e.recordOpLocked(Operation{Type: CmdSet, Key: key, Value: value, Timestamp: ts.UnixNano(), ExpiresAt: expiresAt}, !existed)
 }
 
-// Get lit une valeur ; erreur si la clé est absente.
+// Get lit une valeur ; erreur si la clé est absente ou expirée (expiration
+// lazy : une clé dont le TTL est dépassé est supprimée pour de bon au
+// premier accès, cf. core/ttl.go).
 func (e *GoRedis) Get(key string) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.isExpiredLocked(key) {
+		e.expireKeyLocked(key)
+	}
 	value, ok := e.state[key]
 	if !ok {
 		return "", fmt.Errorf("clé absente: %s", key)
@@ -104,6 +128,7 @@ func (e *GoRedis) setLocked(key, value string, ts time.Time) (existed bool) {
 func (e *GoRedis) deleteLocked(key string) {
 	old := e.state[key]
 	delete(e.state, key)
+	delete(e.expireAt, key)
 	e.removeFromIndexesLocked(key, old)
 	e.stateCount.Store(int64(len(e.state)))
 }
@@ -119,7 +144,7 @@ func (e *GoRedis) BufferCount() int64 { return e.bufferCount.Load() }
 func (e *GoRedis) Execute(cmd Command) (any, error) {
 	switch cmd.Type {
 	case CmdSet:
-		e.Set(cmd.Key, cmd.Value)
+		e.SetWithTTL(cmd.Key, cmd.Value, cmd.ExpireSeconds)
 		return nil, nil
 	case CmdGet:
 		return e.Get(cmd.Key)
@@ -127,6 +152,8 @@ func (e *GoRedis) Execute(cmd Command) (any, error) {
 		return nil, e.Delete(cmd.Key)
 	case CmdGetWhere:
 		return e.GetWhere(cmd.FilterOp, cmd.FilterValue)
+	case CmdFlushAll:
+		return nil, e.Clear()
 	default:
 		return nil, fmt.Errorf("type de commande non géré: %s", cmd.Type)
 	}

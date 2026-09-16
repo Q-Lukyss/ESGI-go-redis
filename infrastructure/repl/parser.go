@@ -2,6 +2,7 @@ package repl
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"ESGI-go-redis/core"
@@ -23,19 +24,29 @@ func ParseCommand(input string) (core.Command, error) {
 		return parseGet(tokens)
 	case "DELETE":
 		return parseDelete(tokens)
+	case "FLUSHALL":
+		return parseFlushAll(tokens)
 	default:
 		return core.Command{}, fmt.Errorf("commande inconnue: %s", tokens[0])
 	}
 }
 
+// parseSet gère : SET <clé> "<valeur>" [EX <secondes>]
 func parseSet(tokens []string) (core.Command, error) {
 	if len(tokens) < 3 {
-		return core.Command{}, fmt.Errorf("SET attend une clé et une valeur : SET <clé> \"<valeur>\"")
+		return core.Command{}, fmt.Errorf(`SET attend une clé et une valeur : SET <clé> "<valeur>" [EX <secondes>]`)
 	}
-	if len(tokens) > 3 {
-		return core.Command{}, fmt.Errorf("SET n'accepte que 2 arguments (clé, valeur) : trop d'arguments")
+	if len(tokens) == 3 {
+		return core.Command{Type: core.CmdSet, Key: tokens[1], Value: tokens[2]}, nil
 	}
-	return core.Command{Type: core.CmdSet, Key: tokens[1], Value: tokens[2]}, nil
+	if len(tokens) == 5 && strings.EqualFold(tokens[3], "EX") {
+		seconds, err := strconv.ParseInt(tokens[4], 10, 64)
+		if err != nil || seconds <= 0 {
+			return core.Command{}, fmt.Errorf("EX attend un nombre de secondes strictement positif")
+		}
+		return core.Command{Type: core.CmdSet, Key: tokens[1], Value: tokens[2], ExpireSeconds: seconds}, nil
+	}
+	return core.Command{}, fmt.Errorf(`SET n'accepte que : SET <clé> "<valeur>" [EX <secondes>]`)
 }
 
 func parseDelete(tokens []string) (core.Command, error) {
@@ -46,6 +57,14 @@ func parseDelete(tokens []string) (core.Command, error) {
 		return core.Command{}, fmt.Errorf("DELETE n'accepte qu'un argument (clé) : trop d'arguments")
 	}
 	return core.Command{Type: core.CmdDelete, Key: tokens[1]}, nil
+}
+
+// parseFlushAll gère : FLUSHALL (aucun argument).
+func parseFlushAll(tokens []string) (core.Command, error) {
+	if len(tokens) > 1 {
+		return core.Command{}, fmt.Errorf("FLUSHALL n'accepte aucun argument")
+	}
+	return core.Command{Type: core.CmdFlushAll}, nil
 }
 
 func parseGet(tokens []string) (core.Command, error) {

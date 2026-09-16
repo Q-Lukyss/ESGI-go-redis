@@ -63,7 +63,7 @@ func (e *GoRedis) Snapshot() error {
 
 	stateCopy := make(map[string]SnapshotEntry, len(e.state))
 	for k, v := range e.state {
-		stateCopy[k] = SnapshotEntry{Value: v, Timestamp: e.timestamps[k]}
+		stateCopy[k] = SnapshotEntry{Value: v, Timestamp: e.timestamps[k], ExpiresAt: e.expireAt[k]}
 	}
 	e.mu.Unlock()
 
@@ -73,6 +73,30 @@ func (e *GoRedis) Snapshot() error {
 		}
 	}
 	if err := e.storage.WriteSnapshot(stateCopy); err != nil {
+		return err
+	}
+	return e.storage.ClearAOF()
+}
+
+// Clear vide entièrement le store (state, index, buffer, TTL) et persiste
+// immédiatement l'état vide (nouveau snapshot + AOF vidé) — l'équivalent
+// d'un FLUSHALL Redis. Même raisonnement que Snapshot() pour l'ordre
+// verrou/Storage : e.mu est relâché avant les appels à Storage.
+func (e *GoRedis) Clear() error {
+	e.mu.Lock()
+	e.state = make(map[string]string)
+	e.equalsIndex = make(map[string]map[string]struct{})
+	e.rangeIndex = NewBTree(e.btreeDegree)
+	e.keyIndex = NewBTree(e.btreeDegree)
+	e.timeIndex = NewBTree(e.btreeDegree)
+	e.timestamps = make(map[string]int64)
+	e.expireAt = make(map[string]int64)
+	e.opBuffer = nil
+	e.stateCount.Store(0)
+	e.bufferCount.Store(0)
+	e.mu.Unlock()
+
+	if err := e.storage.WriteSnapshot(make(map[string]SnapshotEntry)); err != nil {
 		return err
 	}
 	return e.storage.ClearAOF()
@@ -95,6 +119,10 @@ func (e *GoRedis) RunSnapshotLoop(stop <-chan struct{}) {
 // Restore reconstitue le state : on charge le snapshot, puis on rejoue
 // par-dessus chaque opération de l'AOF (les écritures survenues après la
 // dernière photo). Les opérations rejouées ne sont pas re-journalisées.
+// Pour finir, les clés dont le TTL a expiré pendant que le moteur était
+// arrêté sont supprimées pour de bon (et journalisées comme un DELETE) :
+// sans ça, une clé expirée avant même le redémarrage resterait visible
+// jusqu'au premier GET ou au premier passage du balayage périodique.
 func (e *GoRedis) Restore() error {
 	snapshot, err := e.storage.ReadSnapshot()
 	if err != nil {
@@ -110,20 +138,30 @@ func (e *GoRedis) Restore() error {
 
 	e.state = make(map[string]string)
 	e.equalsIndex = make(map[string]map[string]struct{})
-	e.rangeIndex = NewBTree()
-	e.keyIndex = NewBTree()
-	e.timeIndex = NewBTree()
+	e.rangeIndex = NewBTree(e.btreeDegree)
+	e.keyIndex = NewBTree(e.btreeDegree)
+	e.timeIndex = NewBTree(e.btreeDegree)
 	e.timestamps = make(map[string]int64)
+	e.expireAt = make(map[string]int64)
 
 	for key, entry := range snapshot {
 		e.setLocked(key, entry.Value, time.Unix(0, entry.Timestamp))
+		e.setExpiryLocked(key, entry.ExpiresAt)
 	}
 	for _, op := range ops {
 		switch op.Type {
 		case CmdSet:
 			e.setLocked(op.Key, op.Value, time.Unix(0, op.Timestamp))
+			e.setExpiryLocked(op.Key, op.ExpiresAt)
 		case CmdDelete:
 			e.deleteLocked(op.Key)
+		}
+	}
+
+	now := time.Now().UnixNano()
+	for key, exp := range e.expireAt {
+		if now >= exp {
+			e.expireKeyLocked(key)
 		}
 	}
 	return nil

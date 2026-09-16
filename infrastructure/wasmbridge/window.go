@@ -11,10 +11,9 @@ import (
 )
 
 // filterInWindow ne garde que les entrées dont la position (clé ou
-// timestamp, selon le mode déclaré) tombe dans la fenêtre visible. Logique
-// identique à infrastructure/ws.filterInWindow — dupliquée plutôt que
-// partagée, ce sont deux adaptateurs indépendants (l'un compile en WASM,
-// l'autre non).
+// timestamp, selon le mode déclaré) tombe dans la fenêtre visible déclarée
+// par le client (cf. case "subscribe" dans bridge.go) — évite de repousser
+// tout le store à chaque patch.
 func filterInWindow(entries []core.BrowseEntry, win window) []core.BrowseEntry {
 	return lo.Filter(entries, func(e core.BrowseEntry, _ int) bool {
 		switch win.mode {

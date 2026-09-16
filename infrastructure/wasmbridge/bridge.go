@@ -2,9 +2,8 @@
 
 // Package wasmbridge est l'adaptateur temps réel du backend WASM : reçoit
 // des commandes du thread principal via postMessage et diffuse
-// core.GoRedis.Changes() + les compteurs atomiques en retour. Miroir
-// d'infrastructure/ws — même logique de fenêtre/coalescing, seul le
-// "tuyau" diffère (postMessage ici, WebSocket côté serveur).
+// core.GoRedis.Changes() + les compteurs atomiques en retour (patchs
+// coalescés par fenêtre visible, cf. window.go).
 package wasmbridge
 
 import (
@@ -25,12 +24,12 @@ const (
 	defaultBrowseLimit = 100
 	maxBrowseLimit     = 1000
 
-	defaultSeedCount  = 100_000
+	defaultSeedCount  = 1_000_000
 	defaultSeedSpread = 720 * time.Hour
 )
 
 // Bridge branche un core.GoRedis sur postMessage. Un Worker = un onglet =
-// un "client" : pas besoin d'un registre de connexions comme ws.Hub.
+// un "client" : pas besoin d'un registre de connexions multiples.
 type Bridge struct {
 	engine *core.GoRedis
 	win    window
@@ -42,7 +41,7 @@ func New(engine *core.GoRedis) *Bridge {
 
 // Start enregistre le handler self.onmessage et lance la diffusion en
 // arrière-plan (patchs coalescés + stats). Bloque jusqu'à stop fermé (à
-// lancer dans sa propre goroutine, comme ws.Hub.Run).
+// lancer dans sa propre goroutine).
 func (b *Bridge) Start(stop <-chan struct{}) {
 	js.Global().Set("onmessage", js.FuncOf(b.onMessage))
 	postJSON(outboundMessage{Type: "ready"})
@@ -62,7 +61,19 @@ func (b *Bridge) onMessage(this js.Value, args []js.Value) any {
 func (b *Bridge) handle(msg inboundMessage) {
 	switch msg.Type {
 	case "set":
-		b.engine.Set(msg.Key, msg.Value)
+		if err := validateKey(msg.Key); err != nil {
+			b.reject(msg.RequestID, err)
+			return
+		}
+		if err := validateValue(msg.Value); err != nil {
+			b.reject(msg.RequestID, err)
+			return
+		}
+		if err := validateExpireSeconds(msg.ExpireSeconds); err != nil {
+			b.reject(msg.RequestID, err)
+			return
+		}
+		b.engine.SetWithTTL(msg.Key, msg.Value, msg.ExpireSeconds)
 		// Ack optionnel : seulement si le client a fourni un requestId (le
 		// pont reste compatible avec un set "fire-and-forget"). Nécessaire
 		// pour que le benchmark côté front mesure un vrai aller-retour,
@@ -72,6 +83,10 @@ func (b *Bridge) handle(msg inboundMessage) {
 		}
 
 	case "get":
+		if err := validateKey(msg.Key); err != nil {
+			b.reject(msg.RequestID, err)
+			return
+		}
 		value, err := b.engine.Get(msg.Key)
 		if err != nil {
 			b.reject(msg.RequestID, err)
@@ -80,6 +95,10 @@ func (b *Bridge) handle(msg inboundMessage) {
 		postJSON(outboundMessage{Type: "response", RequestID: msg.RequestID, Value: value})
 
 	case "delete":
+		if err := validateKey(msg.Key); err != nil {
+			b.reject(msg.RequestID, err)
+			return
+		}
 		if err := b.engine.Delete(msg.Key); err != nil {
 			b.reject(msg.RequestID, err)
 			return
@@ -116,6 +135,22 @@ func (b *Bridge) handle(msg inboundMessage) {
 		}
 		postJSON(outboundMessage{Type: "response", RequestID: msg.RequestID, Matches: matches})
 
+	case "batch":
+		cmds, err := toCoreCommands(msg.Commands)
+		if err != nil {
+			b.reject(msg.RequestID, err)
+			return
+		}
+		results := b.engine.ExecuteBatch(cmds)
+		postJSON(outboundMessage{Type: "response", RequestID: msg.RequestID, Results: toBatchResults(results)})
+
+	case "flushall":
+		if err := b.engine.Clear(); err != nil {
+			b.reject(msg.RequestID, err)
+			return
+		}
+		postJSON(outboundMessage{Type: "response", RequestID: msg.RequestID})
+
 	case "subscribe":
 		b.win = window{mode: msg.Mode, windowStart: msg.WindowStart, windowEnd: msg.WindowEnd}
 
@@ -150,7 +185,7 @@ func (b *Bridge) runSeed(requestID string, count, spreadHours int) {
 }
 
 // run draine core.GoRedis.Changes(), coalesce et diffuse — même logique
-// que ws.Hub.Run, sans le registre de clients (un seul destinataire ici).
+// sans le registre de clients (un seul destinataire ici : le Worker).
 func (b *Bridge) run(stop <-chan struct{}) {
 	changesTicker := time.NewTicker(coalesceInterval)
 	statsTicker := time.NewTicker(statsInterval)

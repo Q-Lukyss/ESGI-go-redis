@@ -8,6 +8,7 @@ const (
 	CmdGet      CommandType = "GET"
 	CmdDelete   CommandType = "DELETE"
 	CmdGetWhere CommandType = "GET_WHERE"
+	CmdFlushAll CommandType = "FLUSHALL"
 )
 
 // FilterOp est l'opérateur utilisé par un GET WHERE.
@@ -26,14 +27,15 @@ const (
 // agnostique : REST, WS, wasmbridge et le REPL texte (infrastructure/repl)
 // construisent tous un Command avant de le passer à GoRedis.Execute.
 // Selon Type, seuls certains champs sont pertinents :
-//   - CmdSet    : Key, Value
+//   - CmdSet    : Key, Value, ExpireSeconds (optionnel, TTL via EX)
 //   - CmdGet    : Key
 //   - CmdDelete : Key
 //   - CmdGetWhere : FilterOp, FilterValue
 type Command struct {
-	Type        CommandType
-	Key         string
-	Value       string
-	FilterOp    FilterOp
-	FilterValue string
+	Type          CommandType
+	Key           string
+	Value         string
+	ExpireSeconds int64 // TTL en secondes ; <= 0 = pas de TTL explicite (SET sans EX)
+	FilterOp      FilterOp
+	FilterValue   string
 }

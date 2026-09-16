@@ -1,9 +1,7 @@
 buffer_persistant.txt
 state_persistant.json
 state_persistant.json.tmp
-
-.env
-
+.goredis_history
 
 .env
 /tmp

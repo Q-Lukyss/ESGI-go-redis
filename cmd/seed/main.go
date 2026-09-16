@@ -1,5 +1,5 @@
 // cmd/seed peuple le stockage natif (AOF + snapshot) avec un jeu de
-// données de démo, avant de démarrer cmd/server. Un process natif ne peut
+// données de démo, avant de démarrer cmd/repl. Un process natif ne peut
 // pas écrire dans l'OPFS d'un navigateur : la variante WASM devra peupler
 // depuis le navigateur lui-même, en réutilisant seed.Generate.
 package main
@@ -25,7 +25,13 @@ func main() {
 
 	aofFile, snapshotFile := loadEnv()
 	storage := file.New(aofFile, snapshotFile)
-	engine := core.NewGoRedis(storage, time.Second, time.Minute)
+	// TTL et balayage n'ont pas de sens ici : aucune goroutine de fond n'est
+	// lancée (pas de RunFlushLoop/RunExpirySweepLoop), le process fait son
+	// travail puis s'arrête via Snapshot() explicite ci-dessous.
+	cfg := core.DefaultConfig()
+	cfg.ExpirySweepInterval = 0
+	cfg.DefaultTTLSeconds = 0
+	engine := core.NewGoRedis(storage, cfg)
 
 	fmt.Printf("Génération de %d clés (fenêtre %s)...\n", *count, *spread)
 	genStart := time.Now()

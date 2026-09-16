@@ -1,6 +1,6 @@
 // Package file implémente core.Storage sur le système de fichiers natif
 // (AOF en append, snapshot JSON). C'est l'adaptateur de stockage utilisé
-// par le backend serveur (cmd/server, cmd/seed) ; le backend WASM utilise
+// par le REPL natif (cmd/repl, cmd/seed) ; le backend WASM utilise
 // son propre adaptateur (infrastructure/storage/opfs), tous deux
 // interchangeables derrière core.Storage.
 package file

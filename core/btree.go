@@ -26,27 +26,28 @@ func splitCursor(cursor string) (sortKey, key string) {
 	return parts[0], parts[1]
 }
 
-// btreeDegree est le degré minimum t du B-Tree : chaque nœud (hors racine)
-// porte entre t-1 et 2t-1 items, et entre t et 2t enfants.
-const btreeDegree = 3
-
 type btreeNode struct {
 	items    []*indexItem
 	children []*btreeNode
 	leaf     bool
 }
 
+// BTree.degree est le degré minimum t du B-Tree : chaque nœud (hors racine)
+// porte entre t-1 et 2t-1 items, et entre t et 2t enfants. Configurable par
+// instance (cf. core.Config.BTreeDegree, §7.2 : pas de constante en dur)
+// plutôt qu'une constante package-level.
 type BTree struct {
-	root *btreeNode
+	root   *btreeNode
+	degree int
 }
 
-// NewBTree crée un B-Tree vide (racine feuille sans item).
-func NewBTree() *BTree {
-	return &BTree{root: &btreeNode{leaf: true}}
+// NewBTree crée un B-Tree vide (racine feuille sans item) de degré donné.
+func NewBTree(degree int) *BTree {
+	return &BTree{root: &btreeNode{leaf: true}, degree: degree}
 }
 
-func maxItems() int { return 2*btreeDegree - 1 }
-func minItems() int { return btreeDegree - 1 }
+func maxItems(degree int) int { return 2*degree - 1 }
+func minItems(degree int) int { return degree - 1 }
 
 // search localise l'item de clé de tri sk dans le sous-arbre enraciné en n.
 func (n *btreeNode) search(sk string) (*indexItem, bool) {
@@ -81,19 +82,19 @@ func (t *BTree) Insert(value, key string) {
 
 	newItem := &indexItem{sortKey: sk, value: value, keys: map[string]struct{}{key: {}}}
 
-	if len(t.root.items) == maxItems() {
+	if len(t.root.items) == maxItems(t.degree) {
 		newRoot := &btreeNode{leaf: false, children: []*btreeNode{t.root}}
-		splitChild(newRoot, 0)
+		splitChild(newRoot, 0, t.degree)
 		t.root = newRoot
 	}
-	insertNonFull(t.root, newItem)
+	insertNonFull(t.root, newItem, t.degree)
 }
 
 // splitChild éclate parent.children[i] (plein, 2t-1 items) en deux nœuds de
 // t-1 items, en remontant l'item médian dans parent.
-func splitChild(parent *btreeNode, i int) {
+func splitChild(parent *btreeNode, i, degree int) {
 	child := parent.children[i]
-	mid := btreeDegree - 1
+	mid := degree - 1
 	midItem := child.items[mid]
 
 	right := &btreeNode{leaf: child.leaf}
@@ -117,7 +118,7 @@ func splitChild(parent *btreeNode, i int) {
 }
 
 // insertNonFull insère item dans un nœud garanti non plein.
-func insertNonFull(node *btreeNode, item *indexItem) {
+func insertNonFull(node *btreeNode, item *indexItem, degree int) {
 	i := sort.Search(len(node.items), func(i int) bool { return node.items[i].sortKey >= item.sortKey })
 
 	if node.leaf {
@@ -127,13 +128,13 @@ func insertNonFull(node *btreeNode, item *indexItem) {
 		return
 	}
 
-	if len(node.children[i].items) == maxItems() {
-		splitChild(node, i)
+	if len(node.children[i].items) == maxItems(degree) {
+		splitChild(node, i, degree)
 		if item.sortKey > node.items[i].sortKey {
 			i++
 		}
 	}
-	insertNonFull(node.children[i], item)
+	insertNonFull(node.children[i], item, degree)
 }
 
 // Delete retire key de l'ensemble des clés portant value. Si l'ensemble
@@ -150,7 +151,7 @@ func (t *BTree) Delete(value, key string) {
 		return
 	}
 
-	deleteItem(t.root, sk)
+	deleteItem(t.root, sk, t.degree)
 	if len(t.root.items) == 0 && !t.root.leaf {
 		t.root = t.root.children[0]
 	}
@@ -159,7 +160,7 @@ func (t *BTree) Delete(value, key string) {
 // deleteItem retire structurellement l'item de clé de tri sk du sous-arbre
 // enraciné en node, puis rééquilibre les enfants touchés au retour de la
 // récursion (fixChild), pour ne jamais laisser un nœud sous le minimum.
-func deleteItem(node *btreeNode, sk string) {
+func deleteItem(node *btreeNode, sk string, degree int) {
 	i := sort.Search(len(node.items), func(i int) bool { return node.items[i].sortKey >= sk })
 	found := i < len(node.items) && node.items[i].sortKey == sk
 
@@ -171,29 +172,29 @@ func deleteItem(node *btreeNode, sk string) {
 		predNode := node.children[i]
 		pred := predNode.maxItem()
 		node.items[i] = pred
-		deleteItem(predNode, pred.sortKey)
-		fixChild(node, i)
+		deleteItem(predNode, pred.sortKey, degree)
+		fixChild(node, i, degree)
 		return
 	}
 
 	if node.leaf {
 		return // clé absente : rien à faire
 	}
-	deleteItem(node.children[i], sk)
-	fixChild(node, i)
+	deleteItem(node.children[i], sk, degree)
+	fixChild(node, i, degree)
 }
 
 // fixChild rétablit l'invariant minItems sur parent.children[i] après une
 // suppression dans ce sous-arbre : emprunt à un frère si possible, sinon
 // fusion avec un frère.
-func fixChild(parent *btreeNode, i int) {
+func fixChild(parent *btreeNode, i, degree int) {
 	child := parent.children[i]
-	if len(child.items) >= minItems() {
+	if len(child.items) >= minItems(degree) {
 		return
 	}
 
 	// Emprunt au frère gauche (rotation droite).
-	if i > 0 && len(parent.children[i-1].items) > minItems() {
+	if i > 0 && len(parent.children[i-1].items) > minItems(degree) {
 		left := parent.children[i-1]
 		child.items = append([]*indexItem{parent.items[i-1]}, child.items...)
 		parent.items[i-1] = left.items[len(left.items)-1]
@@ -207,7 +208,7 @@ func fixChild(parent *btreeNode, i int) {
 	}
 
 	// Emprunt au frère droit (rotation gauche).
-	if i < len(parent.children)-1 && len(parent.children[i+1].items) > minItems() {
+	if i < len(parent.children)-1 && len(parent.children[i+1].items) > minItems(degree) {
 		right := parent.children[i+1]
 		child.items = append(child.items, parent.items[i])
 		parent.items[i] = right.items[0]

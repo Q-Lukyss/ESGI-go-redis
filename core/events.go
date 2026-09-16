@@ -1,9 +1,5 @@
 package core
 
-// changesBufferSize borne le channel de notification : un consommateur lent
-// (ou absent, ex. mode REPL pur) ne doit jamais bloquer une écriture.
-const changesBufferSize = 4096
-
 // ChangeEvent est la version diffusable d'une Operation, consommée par les
 // transports (WS, wasmbridge) sans qu'ils aient besoin de connaître le
 // moteur ou son verrou.
