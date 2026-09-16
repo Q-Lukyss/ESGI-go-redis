@@ -18,10 +18,13 @@ function RowImpl({ store, rowKey, top, height }: RowProps) {
   const renders = bumpRenderCount(rowKey)
 
   return (
-    <div className="row" style={{ position: 'absolute', top, height, left: 0, right: 0 }}>
-      <span className="row-key">{rowKey}</span>
-      <span className="row-value">{data?.value ?? '…'}</span>
-      <span className="row-renders" title="nombre de rendus de cette ligne">
+    <div
+      className="flex items-center gap-3 border-b border-slate-800/60 px-3 text-slate-300"
+      style={{ position: 'absolute', top, height, left: 0, right: 0 }}
+    >
+      <span className="w-36 shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-slate-200">{rowKey}</span>
+      <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{data?.value ?? '…'}</span>
+      <span className="text-[11px] text-slate-600" title="nombre de rendus de cette ligne">
         ×{renders}
       </span>
     </div>

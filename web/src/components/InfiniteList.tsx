@@ -12,7 +12,9 @@ interface InfiniteListProps {
   overscan?: number
 }
 
-const PAGE_SIZE = 100
+// Taille de page du scroll infini (§7.2 : configurable, pas de constante en
+// dur), surchargeable via VITE_PAGE_SIZE (web/.env, cf. .env.example).
+const PAGE_SIZE = Number(import.meta.env.VITE_PAGE_SIZE) || 100
 
 // InfiniteList : virtualisation faite main (pas de react-window/virtuoso).
 // Ne monte dans le DOM que les lignes visibles (+ overscan), positionnées
@@ -88,8 +90,8 @@ export function InfiniteList({
     }
   }, [endIndex, order.length, hasMore, loadMore])
 
-  // Déclare la fenêtre visible au client, pour que le serveur ne pousse
-  // que les patchs pertinents (cf. infrastructure/ws.filterInWindow).
+  // Déclare la fenêtre visible au client, pour que le Worker ne pousse
+  // que les patchs pertinents (cf. infrastructure/wasmbridge.filterInWindow).
   useEffect(() => {
     const visible = order.slice(startIndex, endIndex)
     if (visible.length === 0) return
@@ -122,7 +124,7 @@ export function InfiniteList({
 
   // La pagination par curseur ne charge que séquentiellement depuis le
   // début (c'est le prix du O(log n) plutôt qu'un offset O(n) sur 1M
-  // entrées, cf. TODO.md) : un grand saut de scroll (glisser la scrollbar)
+  // entrées) : un grand saut de scroll (glisser la scrollbar)
   // peut viser un index bien au-delà de ce qui est chargé. Plutôt que de
   // laisser un vide muet, on affiche un placeholder honnête pour tout index
   // pas encore chargé pendant que le chargement séquentiel rattrape.
@@ -130,8 +132,8 @@ export function InfiniteList({
 
   return (
     <div
-      className="infinite-list"
-      style={{ height: viewportHeight, overflowY: 'auto', position: 'relative' }}
+      className="overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/60 font-mono text-[13px]"
+      style={{ height: viewportHeight, position: 'relative' }}
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
     >
       <div style={{ height: totalHeight, position: 'relative' }}>
@@ -141,7 +143,7 @@ export function InfiniteList({
             return (
               <div
                 key={`loading-${idx}`}
-                className="row row-loading"
+                className="flex items-center gap-3 border-b border-slate-800/60 px-3 italic text-slate-500"
                 style={{ position: 'absolute', top: idx * rowHeight, height: rowHeight, left: 0, right: 0 }}
               >
                 …

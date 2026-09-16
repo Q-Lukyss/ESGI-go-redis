@@ -1,13 +1,16 @@
 import type {
+  BatchResult,
   BrowseEntry,
   BrowseMode,
   BrowsePage,
   GoRedisClient,
+  Match,
   PatchListener,
   Stats,
   StatsListener,
   Unsubscribe,
 } from './types'
+import { validateFilterOp, validateKey, validateTtl, validateValue } from './validate'
 
 interface RawEntry {
   key: string
@@ -28,6 +31,8 @@ interface WorkerMessage {
   hasMore?: boolean
   stateCount?: number
   bufferCount?: number
+  matches?: Match[]
+  results?: BatchResult[]
   error?: string
 }
 
@@ -46,12 +51,39 @@ export interface WasmClientBundle {
   seed(count: number, spreadHours: number): Promise<{ stateCount: number }>
 }
 
+// buildWorkerConfigQuery traduit les variables Vite (VITE_*, cf.
+// web/.env.example) en query string de l'URL du Worker — goredis-worker.js
+// la retraduit en arguments CLI pour cmd/wasm/main.go (flag). Un Worker n'a
+// pas de système de fichiers pour lire un .env directement : c'est le
+// chemin le plus simple pour lui faire parvenir la config sans dupliquer
+// les valeurs par défaut ailleurs qu'en Go (core.DefaultConfig) — un champ
+// omis ici retombe simplement sur le défaut du flag côté Go.
+function buildWorkerConfigQuery(): string {
+  const env = import.meta.env
+  const params = new URLSearchParams()
+  const fields: [string, string | undefined][] = [
+    ['aofFile', env.VITE_AOF_FILE],
+    ['snapshotFile', env.VITE_SNAPSHOT_FILE],
+    ['flushIntervalMs', env.VITE_FLUSH_INTERVAL_MS],
+    ['snapshotIntervalMs', env.VITE_SNAPSHOT_INTERVAL_MS],
+    ['expirySweepIntervalMs', env.VITE_EXPIRY_SWEEP_INTERVAL_MS],
+    ['defaultTtlSeconds', env.VITE_DEFAULT_TTL_SECONDS],
+    ['btreeDegree', env.VITE_BTREE_DEGREE],
+    ['changesBufferSize', env.VITE_CHANGES_BUFFER_SIZE],
+  ]
+  for (const [key, value] of fields) {
+    if (value !== undefined && value !== '') params.set(key, value)
+  }
+  return params.toString()
+}
+
 // createWasmClient démarre le Worker qui charge le moteur Go compilé en
 // WASM (infrastructure/wasmbridge côté Go) et implémente GoRedisClient
 // par-dessus un protocole request/response corrélé par requestId, puisque
 // postMessage est par nature asynchrone et sans corrélation native.
 export function createWasmClient(): WasmClientBundle {
-  const worker = new Worker('/goredis-worker.js')
+  const query = buildWorkerConfigQuery()
+  const worker = new Worker(query ? `/goredis-worker.js?${query}` : '/goredis-worker.js')
   const patchListeners = new Set<PatchListener>()
   const statsListeners = new Set<StatsListener>()
   const pending = new Map<string, (msg: WorkerMessage) => void>()
@@ -94,18 +126,23 @@ export function createWasmClient(): WasmClientBundle {
   }
 
   const client: GoRedisClient = {
-    async set(key, value) {
-      const res = await request({ type: 'set', key, value })
+    async set(key, value, ttlSeconds) {
+      validateKey(key)
+      validateValue(value)
+      validateTtl(ttlSeconds)
+      const res = await request({ type: 'set', key, value, expireSeconds: ttlSeconds ?? 0 })
       if (res.error) throw new Error(res.error)
     },
 
     async get(key) {
+      validateKey(key)
       const res = await request({ type: 'get', key })
       if (res.error) throw new Error(res.error)
       return res.value ?? ''
     },
 
     async delete(key) {
+      validateKey(key)
       const res = await request({ type: 'delete', key })
       if (res.error) throw new Error(res.error)
     },
@@ -123,6 +160,34 @@ export function createWasmClient(): WasmClientBundle {
     async getStats() {
       const res = await request({ type: 'stats' })
       return { stateCount: res.stateCount ?? 0, bufferCount: res.bufferCount ?? 0 }
+    },
+
+    async query(op, value) {
+      validateFilterOp(op)
+      const res = await request({ type: 'query', op, filterValue: value })
+      if (res.error) throw new Error(res.error)
+      return res.matches ?? []
+    },
+
+    async batch(commands) {
+      for (const c of commands) {
+        validateKey(c.key)
+        if (c.op === 'set') {
+          validateValue(c.value ?? '')
+          validateTtl(c.ttlSeconds)
+        }
+      }
+      const res = await request({
+        type: 'batch',
+        commands: commands.map((c) => ({ op: c.op, key: c.key, value: c.value, expireSeconds: c.ttlSeconds ?? 0 })),
+      })
+      if (res.error) throw new Error(res.error)
+      return res.results ?? []
+    },
+
+    async flushAll() {
+      const res = await request({ type: 'flushall' })
+      if (res.error) throw new Error(res.error)
     },
 
     onPatch(listener): Unsubscribe {

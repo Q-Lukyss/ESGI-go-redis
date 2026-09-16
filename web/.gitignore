@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
 
 # Binaire WASM généré par `GOOS=js GOARCH=wasm go build -o web/public/goredis.wasm ./cmd/wasm`
 # — build artifact, pas du source. wasm_exec.js reste committé (glue runtime
